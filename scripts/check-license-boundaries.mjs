@@ -224,6 +224,39 @@ const sourceArchiveText =
 const opaqueArchiveArtifact =
   /\.(?:wasm|zip|tar|tgz|gz|7z|rar|jar|aar|apk|aab|dylib|so|dll|exe|bin)$/i;
 const auditedOpaqueArtifacts = new Map([
+  // Authored inert ZIP security fixtures; metadata/content audit in CHARM_BACKPORT.md.
+  [
+    "vendor/tauri-plugin-updater/src/charm-fixtures/exe.zip",
+    "bc7e12470a8f6ec27ca8b3b118ba96269f5cfa7f8d25b3c4686de3c1d292d026",
+  ],
+  [
+    "vendor/tauri-plugin-updater/src/charm-fixtures/msi.zip",
+    "5ba6c864d28321ba6389813de6cea689ee2816dc5f641dcbc9b5e9b5a914079e",
+  ],
+  [
+    "vendor/tauri-plugin-updater/src/charm-fixtures/nested.zip",
+    "d2cb881258a6c117d824caec1f9854564e0235c303164dea2928fdb1c3860182",
+  ],
+  [
+    "vendor/tauri-plugin-updater/src/charm-fixtures/no-installer.zip",
+    "3aaf6a87a93085b372813bf3cf9c71aaaf4ae9e962cd52f678d370c4a42f73e5",
+  ],
+  [
+    "vendor/tauri-plugin-updater/src/charm-fixtures/parent.zip",
+    "a384dff883f0dcf4a03c86b530538290c1cd6747a7737ed64419e0263cfb3026",
+  ],
+  [
+    "vendor/tauri-plugin-updater/src/charm-fixtures/privileged-mode.zip",
+    "92654d0d8c43519b1bf7b537dbc2dcc4872ed15eff8b168124dbc681d77bab8b",
+  ],
+  [
+    "vendor/tauri-plugin-updater/src/charm-fixtures/symlink-mode.zip",
+    "e832e0ba0ddf69d523658878caa65cb111759f4739b6468cc94376ea9cf0c3fa",
+  ],
+  [
+    "vendor/tauri-plugin-updater/src/charm-fixtures/symlink.zip",
+    "e0e9e15405bfe1702f1718cbb5e1346dab6182b5b6d0804f79274f68ab64f730",
+  ],
   [
     "src-tauri/gen/android/gradle/wrapper/gradle-wrapper.jar",
     "e996d452d2645e70c01c11143ca2d3742734a28da2bf61f25c82bdc288c9e637",

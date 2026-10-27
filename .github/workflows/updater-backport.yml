@@ -1,0 +1,65 @@
+name: Updater backport qualification
+
+on:
+  pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - vendor/tauri-plugin-updater/**
+      - .github/workflows/updater-backport.yml
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    name: Updater extraction and signature (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Install existing Linux native dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          save-if: false
+      - name: Verify locked framework and updater boundary
+        shell: python
+        run: |
+          import tomllib
+          from pathlib import Path
+          packages = tomllib.loads(Path('Cargo.lock').read_text())['package']
+          def one(name):
+              rows = [p for p in packages if p['name'] == name]
+              assert len(rows) == 1, (name, rows)
+              return rows[0]
+          assert one('tauri')['version'] == '2.11.5'
+          assert one('tauri-plugin-updater')['version'] == '2.11.0'
+          assert 'source' not in one('tauri-plugin-updater')
+          assert one('zip')['version'].startswith('9.')
+          assert '33cc42413974783edd5c7590c0b8a3b22f3b5472' in one('tauri-macros')['source']
+          assert 'b3c73f064541011f6a99704982485a662d6b0561' in one('tao')['source']
+      - name: Check updater formatting
+        run: cargo fmt -p tauri-plugin-updater --check
+      - name: Exercise production extraction helpers and upstream security boundary
+        run: cargo test --locked -p tauri-plugin-updater --lib -- --test-threads=1
+      - name: Include the local backport in bundled third-party notices
+        run: node scripts/generate-third-party-licenses.mjs --cargo --output .artifacts/updater-licenses.txt
+      - name: Verify updater attribution is present
+        shell: python
+        run: |
+          from pathlib import Path
+          notices = Path('.artifacts/updater-licenses.txt').read_text(encoding='utf-8')
+          assert 'Cargo: tauri-plugin-updater@2.11.0' in notices
+          assert 'Tauri Programme within The Commons Conservancy' in notices
