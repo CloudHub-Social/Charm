@@ -11,8 +11,18 @@ pub fn check_environment() -> Result<(), &'static str> {
     let expected = std::env::var_os(EXPECTED);
     let actual = std::env::var_os(ACTUAL);
     let durable = std::env::var_os("CHARM_WEB_SERVER_SPACES_BUCKET").is_some()
-        || std::env::var_os(crate::crypto_backup::BUCKET_ENV).is_some();
+        || crypto_bucket_configured(std::env::var_os(crate::crypto_backup::BUCKET_ENV).as_deref());
     validate(expected.as_deref(), actual.as_deref(), durable)
+}
+
+// CryptoBackupStore disables backup for a blank bucket. Keep the session
+// bucket's separate presence-based semantics, and reject non-Unicode crypto
+// configuration conservatively rather than treating malformed input as absent.
+fn crypto_bucket_configured(value: Option<&OsStr>) -> bool {
+    match value {
+        None => false,
+        Some(value) => value.to_str().is_none_or(|value| !value.trim().is_empty()),
+    }
 }
 
 fn validate(
@@ -52,6 +62,15 @@ mod tests {
     }
 
     #[test]
+    fn blank_crypto_bucket_does_not_enable_release_requirements() {
+        for bucket in [None, Some(OsStr::new("")), Some(OsStr::new(" \t\n"))] {
+            assert_eq!(validate(None, None, crypto_bucket_configured(bucket)), Ok(()));
+        }
+        assert!(validate(None, None, crypto_bucket_configured(Some(OsStr::new("bucket")))).is_err());
+        assert!(validate(None, None, crypto_bucket_configured(Some(OsStr::new(" bucket ")))).is_err());
+    }
+
+    #[test]
     fn durable_startup_requires_both_matching_revisions() {
         let sha = Some(OsStr::new(SHA));
         assert_eq!(validate(sha, sha, true), Ok(()));
@@ -74,6 +93,7 @@ mod tests {
     #[test]
     fn non_unicode_metadata_fails_closed() {
         use std::os::unix::ffi::OsStrExt;
+        assert!(crypto_bucket_configured(Some(OsStr::from_bytes(&[0xff]))));
         assert!(validate(Some(OsStr::from_bytes(&[0xff])), Some(OsStr::new(SHA)), true).is_err());
     }
 }

@@ -206,7 +206,9 @@ The release workflow supplies `CHARM_WEB_SERVER_EXPECTED_SOURCE_SHA` from its
 protected-main `GITHUB_SHA`, and binds `CHARM_WEB_SERVER_SOURCE_SHA` to App
 Platform's `${_self.COMMIT_HASH}`. Before telemetry, credentials, storage or
 background tasks initialize, the API requires both values to be matching full
-lowercase commit hashes whenever a Spaces bucket is configured. Use without Spaces (including local filesystem persistence) and without either
+lowercase commit hashes whenever a Spaces bucket is configured. A blank crypto
+bucket disables crypto backup and does not alone require provenance; the session
+bucket retains its separate presence-based configuration semantics. Use without Spaces (including local filesystem persistence) and without either
 provenance variable remains supported. Supplied invalid or
 partial metadata always fails closed. This trusts the provider's build metadata;
 it is not a new artifact attestation or a replacement for protected review and
