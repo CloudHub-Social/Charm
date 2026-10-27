@@ -279,6 +279,11 @@ its trigger. The message container is not itself a button or a tab stop. Embedde
 controls, links, selected text, scrolling, and cancelled gestures retain their
 own interactions. Touch does not permanently show the quick-reaction row.
 
+The toolbar remains visible and hit-testable while its nested picker or menu
+is open, including when a portal owns focus outside the message DOM subtree.
+Both emoji-picker variants dismiss after a selection. More actions can replace
+an already-open picker without an extra dismiss step or a forced interaction.
+
 Timeline gutters are measured item content. Bubbles retain their saved visual
 mode, and IRC reactions use the next line instead of crowding sender and text.
 These repairs do not promote the refresh flag or complete composer/tablet work.

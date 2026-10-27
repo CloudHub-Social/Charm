@@ -4,9 +4,10 @@ import type { MessageActionsHandle } from "./MessageActions";
 /**
  * Keep actions out of intrinsic width and above the message being acted on.
  * No gap separates the toolbar from its row, preserving the pointer hover path.
+ * An open Radix trigger keeps the surface usable while its portal owns focus.
  */
 export const messageActionSurfaceClassName =
-  "pointer-events-none absolute right-0 bottom-full z-20 max-w-full flex-wrap rounded-md border border-border bg-card p-1 opacity-0 shadow-sm transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100";
+  "pointer-events-none absolute right-0 bottom-full z-20 max-w-full flex-wrap rounded-md border border-border bg-card p-1 opacity-0 shadow-sm transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 has-[[data-state=open]]:pointer-events-auto has-[[data-state=open]]:opacity-100";
 
 function isInteractiveTarget(target: EventTarget | null): boolean {
   return (

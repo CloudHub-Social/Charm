@@ -51,6 +51,29 @@ were not verified by that run. The
 passed content, build, and site-graph checks after the ledger links were corrected.
 These are revision-specific results, not a claim that a later head is qualified.
 
+## Picker and gesture regression follow-up
+
+Exact logs from the 51cc4673 merge run identify two unit failures in
+ChatShell.test.tsx and messageActionSurface.test.tsx, not the previously
+suspected MessageRow.test.tsx. The integration fixture now supplies a real
+one-touch start; the selection fixture clears an existing range and verifies
+selected text before asserting that touch release preserves focus.
+
+Test-first commit 3b6c17910f4ae82b6d81f2ba787174aeb1eb5c74, in
+[Quality run 40599079756](https://github.com/CloudHub-Social/Charm/actions/runs/40599079756),
+passes those two tests and 2,233 unit cases overall; its only unit failure is
+the new compact-picker dismissal assertion. Browser regressions separately
+show the picker remaining mounted after selection and the action surface
+having pointer-events disabled while the portalled picker owns focus.
+
+The repair makes selection dismiss either picker variant and retains action
+surface visibility and pointer access for an open Radix trigger. The
+cross-popover journey still requires a normal More-actions click to open its
+menu and dismiss the picker. No forced clicks, removed journey assertions,
+relaxed timeouts, disabled rules, or lowered coverage gates are used.
+Record qualification against the subsequent implementation head in PR #601;
+the test-first run above is intentionally failing, not release evidence.
+
 ## Acceptance and remaining work
 
 Implementation is not release or physical-device acceptance. Record current-head
