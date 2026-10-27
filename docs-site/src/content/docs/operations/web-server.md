@@ -125,12 +125,27 @@ The workflow:
 1. fetches the live DigitalOcean app spec;
 2. merges checked-in structural changes from `.do/app.yaml` while preserving
    DigitalOcean's encrypted secret values;
-3. updates the app and waits for a new deployment;
+3. binds the selected protected revision and requests one spec/source update,
+   waiting for that operation (without a second `create-deployment` request);
 4. verifies `/api/health` returns `200`;
 5. verifies unauthenticated `/api/devices` returns `401`.
 
 The live-spec merge is important: applying `.do/app.yaml` as a full replacement
 would erase secret values that cannot exist in Git.
+
+## Writer activation diagnosis
+
+A writer-handoff timeout reports `attempts`, `mutation_waits`, and
+`conditional_conflicts` in the existing startup error. Counts distinguish waits
+for a live recovery mutation from failed conditional publication; mixed counts
+are possible. They contain no fence contents, owner identities, snapshot data,
+credentials, or key material. The existing retry budget, delays, leases and
+ownership checks are unchanged.
+
+A conflict count does not establish why publication failed or authorize clearing
+a fence. Preserve the old writer and durable data while investigating issue573.
+An automatic rollback and healthy routes prove service availability only; verify
+the provider's active source revision before claiming a candidate is deployed.
 
 ## Backend observability
 
@@ -165,3 +180,65 @@ homeserver at `localhost:8008` plus `TEST_MATRIX_USERNAME` and
   Worker proxy in front of this service.
 - [Sentry observability](../sentry/) covers backend telemetry, release tags,
   and privacy scrubbing.
+
+### Writer fence reader compatibility
+
+The current reader accepts the original plain alphanumeric writer IDs (and
+hyphen/underscore fixture IDs) as well as JSON lease fences. Malformed structured
+fences fail closed with a payload-free error; they must not silently become
+legacy IDs with no lease. A regression fixture verifies that activation leaves
+such bytes unchanged. This is a parser hardening change, not evidence that
+malformed production data caused issue573.
+
+The running legacy revision092dba3 reads JSON bytes as a literal ID. A change to
+the current reader cannot retrofit that old process. A compatibility backport
+would need JSON decoding plus equivalent pending/expired ownership decisions;
+merely extracting writer_id does not preserve lease behavior. Such a backport
+also does not fix the legacy unconditional startup write or add mutation leases.
+Do not force a rollout, clear a fence, or waive conditional-write safeguards on
+the assumption that parsing alone resolves the startup failure. The Spaces probe
+is paused, and no new test infrastructure is a rollout prerequisite.
+
+
+### Release source guard and remaining transition requirements
+
+The release workflow supplies `CHARM_WEB_SERVER_EXPECTED_SOURCE_SHA` from its
+protected-main `GITHUB_SHA`, and binds `CHARM_WEB_SERVER_SOURCE_SHA` to App
+Platform's `${_self.COMMIT_HASH}`. Before telemetry, credentials, storage or
+background tasks initialize, the API requires both values to be matching full
+lowercase commit hashes whenever a Spaces bucket is configured. A blank crypto
+bucket disables crypto backup and does not alone require provenance; the session
+bucket retains its separate presence-based configuration semantics. Use without Spaces (including local filesystem persistence) and without either
+provenance variable remains supported. Supplied invalid or
+partial metadata always fails closed. This trusts the provider's build metadata;
+it is not a new artifact attestation or a replacement for protected review and
+exact-revision CI. These two nonsecret runtime entries require approval as part
+of the still-held production transition.
+
+The workflow issues one `apps update --update-sources --wait` request, with
+automatic HTTP retries disabled for that mutation. An error or wait timeout is
+not proof of nonexecution: inspect the existing provider operation before any
+retry. Workflow serialization is not cross-run idempotency; a manual rerun or
+separate dispatch still requires outcome reconciliation. This proposal does not
+change provider deployment settings or make an earlier binary enforce the guard.
+
+Do not start the old `092dba3` binary after a candidate may have written JSON
+writer state. Provider rollback restores code and configuration, not durable
+object state. A safe fallback must understand the current lease protocol and
+preserve conditional writes, recovery ownership and pending/expired decisions.
+A parser-only legacy backport is insufficient. No supported automatic-fallback
+control guaranteeing that behavior has been established for this app.
+
+The legacy shutdown message announces snapshot work; it is not a receipt that
+all final snapshots succeeded. The shutdown loop logs individual failures and
+continues without an aggregate success result. Neither a clean process exit nor
+an absence of errors proves positive snapshot completion. Before a transition,
+require positive final-snapshot evidence, confirmed cessation of every old
+background writer, and a compatible failure destination. The current patch does
+not produce those receipts for the already-running legacy binary. No live
+classifier, fence modification, forced rollout or new test bucket is authorized
+by this proposal. Transition downtime remains unknown.
+
+Provider references: [source update and wait semantics](https://docs.digitalocean.com/reference/doctl/reference/apps/update/),
+[build commit binding](https://docs.digitalocean.com/products/app-platform/how-to/use-environment-variables/),
+and [rollback behavior](https://docs.digitalocean.com/products/app-platform/how-to/manage-deployments/).

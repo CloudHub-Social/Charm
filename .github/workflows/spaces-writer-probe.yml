@@ -1,0 +1,40 @@
+name: Isolated Spaces probe preparation
+
+# Preparation only. No live job or provider credential is enabled here.
+on:
+  pull_request:
+    paths:
+      - crates/charm-web-server/examples/spaces_writer_probe.rs
+      - .github/workflows/spaces-writer-probe.yml
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    name: Compile isolated Spaces probe without credentials
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-tauri-linux
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          save-if: false
+      - name: Compile locked probe
+        run: cargo build --locked -p charm-web-server --example spaces_writer_probe
+      - name: Verify default invocation remains inert
+        run: test "$(target/debug/examples/spaces_writer_probe)" = probe_not_executed
+      - name: Verify live invocation remains held before credentials or network
+        shell: bash
+        run: |
+          set +e
+          target/debug/examples/spaces_writer_probe --approved-live-probe > probe-guard.txt 2>&1
+          status=$?
+          set -e
+          test "$status" -eq 1
+          test "$(cat probe-guard.txt)" = probe_execution_guard_failed

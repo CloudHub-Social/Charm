@@ -216,12 +216,15 @@ impl CryptoBackupStore {
         if !self.enforce_writer_fence {
             return Ok(());
         }
+        let mut mutation_waits = 0;
+        let mut conditional_conflicts = 0;
         for attempt in 0..WRITER_ACTIVATION_RETRIES {
             let current = self.active_writer_fence().await?;
             if current
                 .as_ref()
                 .is_some_and(|(fence, _)| fence.mutation_is_live(unix_time_ms()))
             {
+                mutation_waits += 1;
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 continue;
             }
@@ -245,9 +248,14 @@ impl CryptoBackupStore {
             {
                 return Ok(());
             }
+            conditional_conflicts += 1;
             tokio::time::sleep(cas_retry_delay(attempt)).await;
         }
-        Err("timed out waiting for an active recovery mutation before writer handoff".into())
+        Err(format!(
+            "timed out waiting for an active recovery mutation before writer handoff \
+             (attempts={WRITER_ACTIVATION_RETRIES}, mutation_waits={mutation_waits}, \
+             conditional_conflicts={conditional_conflicts})"
+        ))
     }
 
     /// Finalizes the provisional startup handoff only after fallible startup
@@ -438,14 +446,26 @@ impl CryptoBackupStore {
         if raw.is_empty() {
             return Err("crypto snapshot writer fence is empty".to_string());
         }
-        // Accept the original plain writer-id format during rolling upgrades.
-        let fence = serde_json::from_str(raw).unwrap_or_else(|_| ActiveWriterFence {
-            writer_id: raw.to_string(),
-            previous_writer_id: None,
-            activation_expires_at_ms: None,
-            mutation_owner: None,
-            mutation_expires_at_ms: None,
-        });
+        // Legacy writers generated alphanumeric identifiers. Tests and older
+        // operational fixtures also use hyphens/underscores. Structured or
+        // malformed JSON must never be reinterpreted as an unleased legacy ID.
+        let fence = if raw
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            ActiveWriterFence {
+                writer_id: raw.to_string(),
+                previous_writer_id: None,
+                activation_expires_at_ms: None,
+                mutation_owner: None,
+                mutation_expires_at_ms: None,
+            }
+        } else if raw.starts_with('{') {
+            serde_json::from_str(raw)
+                .map_err(|_| "crypto snapshot writer fence has invalid structured data".to_string())?
+        } else {
+            return Err("crypto snapshot writer fence has invalid structured data".to_string());
+        };
         Ok(Some((fence, version)))
     }
 
@@ -1224,6 +1244,279 @@ mod tests {
         assert!(!replacement.is_active_writer().await.unwrap());
         writer.release_recovery_mutation("request-a").await.unwrap();
         assert!(writer.require_recovery_mutation("request-a").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn activation_waits_for_live_mutation_without_replacing_its_owner() {
+        let backend: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let owner = CryptoBackupStore::new_for_test_with_store(
+            [61; 32],
+            "fixture-owner",
+            Arc::clone(&backend),
+            true,
+        );
+        let replacement = CryptoBackupStore::new_for_test_with_store(
+            [61; 32],
+            "fixture-replacement",
+            backend,
+            true,
+        );
+        owner.activate_writer().await.unwrap();
+        owner.commit_writer().await.unwrap();
+        owner.acquire_recovery_mutation("fixture-request").await.unwrap();
+        let (mut fence, version) = owner.active_writer_fence().await.unwrap().unwrap();
+        // Keep this synthetic lease live independently of wall-clock expiry.
+        fence.mutation_expires_at_ms = Some(u64::MAX);
+        assert!(owner
+            .write_active_writer_fence(&fence, Some(version))
+            .await
+            .unwrap());
+        assert!(tokio::time::timeout(Duration::from_millis(20), replacement.activate_writer())
+            .await
+            .is_err());
+        let (held, _) = owner.active_writer_fence().await.unwrap().unwrap();
+        assert_eq!(held.writer_id, "fixture-owner");
+        assert_eq!(held.mutation_owner.as_deref(), Some("fixture-request"));
+        assert_eq!(held.mutation_expires_at_ms, Some(u64::MAX));
+
+        owner.release_recovery_mutation("fixture-request").await.unwrap();
+        replacement.activate_writer().await.unwrap();
+        let (next, _) = replacement.active_writer_fence().await.unwrap().unwrap();
+        assert_eq!(next.writer_id, "fixture-replacement");
+        assert_eq!(next.previous_writer_id.as_deref(), Some("fixture-owner"));
+        assert!(next.mutation_owner.is_none());
+    }
+
+    #[tokio::test]
+    async fn activation_timeout_counts_live_mutation_waits_without_changing_the_fence() {
+        let backend: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let owner = CryptoBackupStore::new_for_test_with_store(
+            [65; 32],
+            "timeout-owner",
+            Arc::clone(&backend),
+            true,
+        );
+        owner.activate_writer().await.unwrap();
+        owner.commit_writer().await.unwrap();
+        owner
+            .acquire_recovery_mutation("timeout-request")
+            .await
+            .unwrap();
+        let (mut fence, version) = owner.active_writer_fence().await.unwrap().unwrap();
+        fence.mutation_expires_at_ms = Some(u64::MAX);
+        assert!(owner
+            .write_active_writer_fence(&fence, Some(version))
+            .await
+            .unwrap());
+        let path = ObjectPath::from(ACTIVE_WRITER_PATH);
+        let before = backend.get(&path).await.unwrap().bytes().await.unwrap();
+        let replacement = CryptoBackupStore::new_for_test_with_store(
+            [65; 32],
+            "timeout-contender",
+            Arc::clone(&backend),
+            true,
+        );
+
+        // Exercise the unchanged production budget and sleeps in hosted CI.
+        let error = tokio::time::timeout(Duration::from_secs(180), replacement.activate_writer())
+            .await
+            .expect("activation should exhaust its existing retry budget")
+            .unwrap_err();
+        assert_eq!(error, "timed out waiting for an active recovery mutation before writer handoff (attempts=150, mutation_waits=150, conditional_conflicts=0)");
+        let after = backend.get(&path).await.unwrap().bytes().await.unwrap();
+        assert_eq!(before, after);
+        owner
+            .require_recovery_mutation("timeout-request")
+            .await
+            .unwrap();
+        assert!(replacement.require_active_writer().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn activation_timeout_counts_s3_preconditions_without_claiming_a_live_mutation() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let reads = Arc::new(AtomicUsize::new(0));
+        let writes = Arc::new(AtomicUsize::new(0));
+        let read_count = Arc::clone(&reads);
+        let write_count = Arc::clone(&writes);
+        let router = axum::Router::new().route(
+            "/fixture/control/active-writer",
+            axum::routing::get(move || {
+                let count = Arc::clone(&read_count);
+                async move {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    (
+                        [
+                            ("etag", "\"fixture-etag\""),
+                            ("last-modified", "Tue, 27 Oct 2026 00:00:00 GMT"),
+                        ],
+                        r#"{"writer_id":"fixture-owner","previous_writer_id":null,"activation_expires_at_ms":null,"mutation_owner":null,"mutation_expires_at_ms":null}"#,
+                    )
+                }
+            })
+            .put(move |headers: axum::http::HeaderMap| {
+                let count = Arc::clone(&write_count);
+                async move {
+                    assert_eq!(headers.get("if-match").unwrap(), "\"fixture-etag\"");
+                    count.fetch_add(1, Ordering::SeqCst);
+                    (
+                        axum::http::StatusCode::PRECONDITION_FAILED,
+                        [("content-type", "application/xml")],
+                        "<Error><Code>PreconditionFailed</Code><Message>fixture conflict</Message></Error>",
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let backend: Arc<dyn ObjectStore> = Arc::new(
+            AmazonS3Builder::new()
+                .with_bucket_name("fixture")
+                .with_region("us-east-1")
+                .with_endpoint(format!("http://{address}"))
+                .with_allow_http(true)
+                .with_access_key_id("fixture-access")
+                .with_secret_access_key("fixture-secret")
+                .build()
+                .unwrap(),
+        );
+        let replacement = CryptoBackupStore::new_for_test_with_store(
+            [66; 32],
+            "fixture-contender",
+            backend,
+            true,
+        );
+        let result = tokio::time::timeout(Duration::from_secs(60), replacement.activate_writer()).await;
+        server.abort();
+        let error = result
+            .expect("bounded local S3 fixture should finish")
+            .unwrap_err();
+        assert_eq!(error, "timed out waiting for an active recovery mutation before writer handoff (attempts=150, mutation_waits=0, conditional_conflicts=150)");
+        assert_eq!(reads.load(Ordering::SeqCst), WRITER_ACTIVATION_RETRIES);
+        assert_eq!(writes.load(Ordering::SeqCst), WRITER_ACTIVATION_RETRIES);
+    }
+
+    #[tokio::test]
+    async fn expired_mutation_allows_provisional_handoff_without_late_owner_release() {
+        let backend: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let owner = CryptoBackupStore::new_for_test_with_store(
+            [62; 32],
+            "expired-owner",
+            Arc::clone(&backend),
+            true,
+        );
+        let replacement = CryptoBackupStore::new_for_test_with_store(
+            [62; 32],
+            "next-owner",
+            backend,
+            true,
+        );
+        owner.activate_writer().await.unwrap();
+        owner.commit_writer().await.unwrap();
+        owner.acquire_recovery_mutation("expired-request").await.unwrap();
+        let (mut fence, version) = owner.active_writer_fence().await.unwrap().unwrap();
+        fence.mutation_expires_at_ms = Some(0);
+        assert!(owner
+            .write_active_writer_fence(&fence, Some(version))
+            .await
+            .unwrap());
+        replacement.activate_writer().await.unwrap();
+        replacement.acquire_recovery_mutation("next-request").await.unwrap();
+        owner.release_recovery_mutation("expired-request").await.unwrap();
+        let (next, _) = replacement.active_writer_fence().await.unwrap().unwrap();
+        assert_eq!(next.writer_id, "next-owner");
+        assert_eq!(next.previous_writer_id.as_deref(), Some("expired-owner"));
+        assert_eq!(next.mutation_owner.as_deref(), Some("next-request"));
+        replacement.require_recovery_mutation("next-request").await.unwrap();
+        assert!(owner.require_recovery_mutation("expired-request").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn repeated_stale_fence_updates_fail_without_a_live_recovery_mutation() {
+        let backend: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let owner = CryptoBackupStore::new_for_test_with_store(
+            [63; 32],
+            "cas-owner",
+            backend,
+            true,
+        );
+        owner.activate_writer().await.unwrap();
+        let (_, stale_version) = owner.active_writer_fence().await.unwrap().unwrap();
+        owner.commit_writer().await.unwrap();
+        let (mut attempted, _) = owner.active_writer_fence().await.unwrap().unwrap();
+        assert!(attempted.mutation_owner.is_none());
+        attempted.writer_id = "stale-contender".to_string();
+        for _ in 0..3 {
+            assert!(!owner
+                .write_active_writer_fence(&attempted, Some(stale_version.clone()))
+                .await
+                .unwrap());
+        }
+        // Also distinguish create collisions from a live mutation lease.
+        assert!(!owner.write_active_writer_fence(&attempted, None).await.unwrap());
+        let (retained, _) = owner.active_writer_fence().await.unwrap().unwrap();
+        assert_eq!(retained.writer_id, "cas-owner");
+        assert!(retained.mutation_owner.is_none());
+        assert!(retained.previous_writer_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn current_reader_accepts_plain_fence_then_preserves_predecessor_in_json() {
+        let backend: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        backend
+            .put(
+                &ObjectPath::from(ACTIVE_WRITER_PATH),
+                PutPayload::from(b"legacy-fixture-owner".to_vec()),
+            )
+            .await
+            .unwrap();
+        let replacement = CryptoBackupStore::new_for_test_with_store(
+            [64; 32],
+            "json-fixture-owner",
+            Arc::clone(&backend),
+            true,
+        );
+        let (legacy, _) = replacement.active_writer_fence().await.unwrap().unwrap();
+        assert_eq!(legacy.writer_id, "legacy-fixture-owner");
+        assert!(legacy.mutation_owner.is_none());
+        replacement.activate_writer().await.unwrap();
+        let bytes = backend
+            .get(&ObjectPath::from(ACTIVE_WRITER_PATH))
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        let next: ActiveWriterFence = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(next.writer_id, "json-fixture-owner");
+        assert_eq!(next.previous_writer_id.as_deref(), Some("legacy-fixture-owner"));
+        assert!(next.mutation_owner.is_none());
+        // This does not assert that an older binary can read the JSON fence.
+    }
+
+    #[tokio::test]
+    async fn malformed_structured_fence_is_not_reinterpreted_or_overwritten() {
+        for raw in [
+            r#"{"writer_id":"owner","mutation_owner":"busy","mutation_expires_at_ms":"invalid"}"#,
+            r#"{"writer_id":"owner","mutation_owner":"busy""#,
+            r#"["owner"]"#,
+            r#""owner""#,
+        ] {
+            let backend: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+            let path = ObjectPath::from(ACTIVE_WRITER_PATH);
+            backend.put(&path, PutPayload::from(raw.to_string())).await.unwrap();
+            let candidate = CryptoBackupStore::new_for_test_with_store(
+                [67; 32],
+                "candidate",
+                Arc::clone(&backend),
+                true,
+            );
+            let error = candidate.activate_writer().await.unwrap_err();
+            assert_eq!(error, "crypto snapshot writer fence has invalid structured data");
+            assert_eq!(backend.get(&path).await.unwrap().bytes().await.unwrap().as_ref(), raw.as_bytes());
+        }
     }
 
     #[test]

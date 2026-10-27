@@ -18,7 +18,7 @@
 #      real secret values here.
 #
 # Deploys after initial provisioning are triggered explicitly by
-# web-server-deploy.yml (doctl apps create-deployment --wait), not DO's own
+# web-server-deploy.yml (doctl apps update --update-sources --wait), not DO's own
 # auto-deploy-on-push, so the sequencing/verification stays visible in
 # Actions the same way web-deploy-dev.yml already works for the frontend
 # Worker.
@@ -29,7 +29,7 @@ services:
       repo: CloudHub-Social/Charm
       branch: main
       # Explicit, not DO's own auto-deploy-on-push: deploys are triggered by
-      # web-server-deploy.yml's `doctl apps create-deployment --wait` instead,
+      # web-server-deploy.yml's `doctl apps update --update-sources --wait` instead,
       # so a push to main gets built+verified through Actions rather than an
       # untracked deploy firing the moment DO's GitHub webhook lands.
       deploy_on_push: false
