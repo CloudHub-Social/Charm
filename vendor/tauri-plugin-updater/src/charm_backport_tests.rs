@@ -34,7 +34,6 @@ fn update_fixture() -> Update {
         extract_path: PathBuf::new(),
         context: UpdaterContext {
             config: Config::default(),
-            configure_client: None,
             app_name: "charm-backport-test".into(),
             installer_args: Vec::new(),
             current_exe_args: vec!["Charm.exe".into()],
@@ -158,4 +157,50 @@ fn zip_security_boundary_confines_symlinks_and_permission_changes() {
         );
         assert!(!destination.join("link").exists());
     }
+}
+
+#[test]
+fn legacy_tls_bypass_flags_are_rejected_in_both_spellings() {
+    for name in [
+        "dangerousAcceptInvalidCerts",
+        "dangerous-accept-invalid-certs",
+        "dangerousAcceptInvalidHostnames",
+        "dangerous-accept-invalid-hostnames",
+    ] {
+        let mut value = serde_json::json!({
+            "pubkey": "public-fixture",
+            "endpoints": ["https://updates.example.invalid"],
+        });
+        value[name] = serde_json::Value::Bool(true);
+        let error = serde_json::from_value::<Config>(value.clone()).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("requires TLS certificate and hostname verification"));
+        value[name] = serde_json::Value::Bool(false);
+        let config = serde_json::from_value::<Config>(value.clone()).unwrap();
+        assert_eq!(config.endpoints[0].as_str(), "https://updates.example.invalid/");
+        assert_eq!(config.pubkey, "public-fixture");
+        value[name] = serde_json::Value::String("true".into());
+        assert!(serde_json::from_value::<Config>(value).is_err());
+    }
+}
+
+#[test]
+fn ordinary_and_current_charm_updater_configuration_remain_valid() {
+    let current: serde_json::Value =
+        serde_json::from_str(include_str!("../../../src-tauri/tauri.conf.json")).unwrap();
+    let config = serde_json::from_value::<Config>(current["plugins"]["updater"].clone()).unwrap();
+    assert!(config.endpoints.is_empty());
+    assert!(!config.pubkey.is_empty());
+    let config = serde_json::from_value::<Config>(serde_json::json!({
+        "pubkey": "public-fixture",
+        "endpoints": ["https://updates.example.invalid"],
+        "windows": { "installerArgs": ["/quiet"], "installMode": "passive" },
+    }))
+    .unwrap();
+    assert_eq!(config.endpoints.len(), 1);
+    assert_eq!(
+        config.windows.unwrap().installer_args,
+        [OsString::from("/quiet")]
+    );
 }

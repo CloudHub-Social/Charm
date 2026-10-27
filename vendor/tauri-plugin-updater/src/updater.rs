@@ -127,7 +127,6 @@ impl RemoteRelease {
 }
 
 pub type OnBeforeExit = Arc<dyn Fn() + Send + Sync + 'static>;
-pub type OnBeforeRequest = Arc<dyn Fn(ClientBuilder) -> ClientBuilder + Send + Sync + 'static>;
 pub type VersionComparator = Arc<dyn Fn(Version, RemoteRelease) -> bool + Send + Sync>;
 #[cfg(target_os = "macos")]
 type MainThreadClosure = Box<dyn FnOnce() + Send + Sync + 'static>;
@@ -139,7 +138,6 @@ type RunOnMainThread = Arc<dyn Fn(MainThreadClosure) -> tauri::Result<()> + Send
 #[derive(Clone)]
 struct UpdaterContext {
     config: Config,
-    configure_client: Option<OnBeforeRequest>,
     #[cfg(target_os = "macos")]
     run_on_main_thread: RunOnMainThread,
     /// App name, used for creating named tempfiles
@@ -155,6 +153,26 @@ struct UpdaterContext {
     restart_after_install: bool,
 }
 
+/// Standard request configuration remains available:
+///
+/// ```
+/// fn configure(builder: tauri_plugin_updater::UpdaterBuilder) -> tauri_plugin_updater::UpdaterBuilder {
+///     builder
+///         .timeout(std::time::Duration::from_secs(30))
+///         .proxy("http://localhost:8080".parse().unwrap())
+///         .headers(http::HeaderMap::new())
+///         .no_proxy()
+/// }
+/// ```
+///
+/// Builds an updater with standard TLS verification. Charm deliberately removes
+/// upstream's arbitrary HTTP-client callback, including custom TLS backends.
+///
+/// ```compile_fail,E0599
+/// fn insecure_callback(builder: tauri_plugin_updater::UpdaterBuilder) {
+///     builder.configure_client(|client| client);
+/// }
+/// ```
 pub struct UpdaterBuilder {
     current_version: Version,
     pub(crate) version_comparator: Option<VersionComparator>,
@@ -184,7 +202,6 @@ impl UpdaterBuilder {
                     .map(|w| w.installer_args.clone())
                     .unwrap_or_default(),
                 config,
-                configure_client: None,
                 #[cfg(target_os = "macos")]
                 run_on_main_thread,
                 #[cfg(windows)]
@@ -350,18 +367,6 @@ impl UpdaterBuilder {
         self
     }
 
-    /// Allows you to modify the `reqwest` client builder before the HTTP request is sent.
-    ///
-    /// Note that `reqwest` crate may be updated in minor releases of tauri-plugin-updater.
-    /// Therefore it's recommended to pin the plugin to at least a minor version when you're using `configure_client`.
-    pub fn configure_client<F: Fn(ClientBuilder) -> ClientBuilder + Send + Sync + 'static>(
-        mut self,
-        f: F,
-    ) -> Self {
-        self.context.configure_client.replace(Arc::new(f));
-        self
-    }
-
     pub fn build(self) -> Result<Updater> {
         let endpoints = self
             .endpoints
@@ -495,12 +500,6 @@ impl Updater {
             }
 
             let mut request = ClientBuilder::new().user_agent(UPDATER_USER_AGENT);
-            if self.context.config.dangerous_accept_invalid_certs {
-                request = request.danger_accept_invalid_certs(true);
-            }
-            if self.context.config.dangerous_accept_invalid_hostnames {
-                request = request.danger_accept_invalid_hostnames(true);
-            }
             if let Some(timeout) = self.timeout {
                 request = request.timeout(timeout);
             }
@@ -511,10 +510,6 @@ impl Updater {
                 log::debug!("using proxy {proxy}");
                 let proxy = reqwest::Proxy::all(proxy.as_str())?;
                 request = request.proxy(proxy);
-            }
-
-            if let Some(ref configure_client) = self.context.configure_client {
-                request = configure_client(request);
             }
 
             let response = request
@@ -689,12 +684,6 @@ impl Update {
         }
 
         let mut request = ClientBuilder::new().user_agent(UPDATER_USER_AGENT);
-        if self.context.config.dangerous_accept_invalid_certs {
-            request = request.danger_accept_invalid_certs(true);
-        }
-        if self.context.config.dangerous_accept_invalid_hostnames {
-            request = request.danger_accept_invalid_hostnames(true);
-        }
         if let Some(timeout) = self.timeout {
             request = request.timeout(timeout);
         }
@@ -703,9 +692,6 @@ impl Update {
         } else if let Some(ref proxy) = self.proxy {
             let proxy = reqwest::Proxy::all(proxy.as_str())?;
             request = request.proxy(proxy);
-        }
-        if let Some(ref configure_client) = self.context.configure_client {
-            request = configure_client(request);
         }
         let response = request
             .build()?

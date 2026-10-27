@@ -235,3 +235,13 @@ Existing audit thresholds and platform/release gates remain required. Preparing 
 lockfile artifact is not acceptance: the artifact must be reviewed, committed and
 tested at the resulting PR head. The temporary branch-only preparation job is removed after candidate adoption;
 PR qualification remains until a supported upstream migration removes the backport.
+
+
+The vendored updater also removes optional certificate/hostname bypass fields and
+its arbitrary custom-client callback. Legacy JSON flags fail explicitly when
+true; omitted or false values remain compatible. This preserves Charm's current
+configuration, headers, proxies, timeouts and signature checks, while deliberately
+removing optional upstream insecure/custom-client behavior. Hosted tests include
+configuration rejection and compile-fail checks for the removed Rust APIs. Both
+metadata and download paths retain standard TLS validation, and CodeQL findings
+must clear through the source change rather than suppression or dismissal.
