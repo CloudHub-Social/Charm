@@ -152,6 +152,17 @@ the provider returned fresh data. An update precondition error may also represen
 the dependency's translation of a missing-object response, so these counts do
 not establish an underlying HTTP status or prove provider incompatibility.
 
+The conflict counters also classify retained HTTP status as `http_404`,
+`http_412`, `http_other`, or `http_unknown`. The pinned storage dependency keeps
+that status in a private error type even when it maps update-404 to a precondition
+error. A bounded formatter recognizes only its fixed status prefix and stops
+before URLs or response bodies; unrecognized formats remain unknown. These
+categories never affect retry, lease or conditional-write decisions and add no
+requests. Synthetic HTTP fixtures distinguish mapped 404 from 412. This does not
+establish which status production returned before these counters existed, nor
+prove that a 412 means the provider lacks conditional-write support.
+
+
 A conflict count does not establish why publication failed or authorize clearing
 a fence. Preserve the old writer and durable data while investigating issue573.
 An automatic rollback and healthy routes prove service availability only; verify

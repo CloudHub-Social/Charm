@@ -43,6 +43,10 @@ struct ActivationConflictObservations {
     create_conflicts: usize,
     update_conflicts: usize,
     observed_version_changes: usize,
+    http_404: usize,
+    http_412: usize,
+    http_other: usize,
+    http_unknown: usize,
     previous_version: Option<Option<(Option<String>, Option<String>)>>,
 }
 
@@ -66,6 +70,63 @@ impl ActivationConflictObservations {
             self.update_conflicts += 1;
         }
     }
+}
+
+// object_store 0.14.1 retains RetryError -> RequestError in Error::source(),
+// including when S3 converts update-404 to Precondition. Those types are private.
+// Recognize only their fixed status prefix, stopping formatting before any URL
+// or body. Dependency-format drift is unknown, never a concurrency decision.
+fn conflict_http_status(error: &(dyn std::error::Error + 'static)) -> Option<u16> {
+    const PREFIX: &[u8] = b"Server returned non-2xx status code: ";
+    #[derive(Default)]
+    struct StatusPrefix {
+        position: usize,
+        value: u16,
+        status: Option<u16>,
+        stopped: bool,
+    }
+    impl std::fmt::Write for StatusPrefix {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            if self.stopped {
+                return Err(std::fmt::Error);
+            }
+            for byte in text.bytes() {
+                let valid = if self.position < PREFIX.len() {
+                    byte == PREFIX[self.position]
+                } else if self.position < PREFIX.len() + 3 {
+                    if byte.is_ascii_digit() {
+                        self.value = self.value * 10 + u16::from(byte - b'0');
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    if byte == b' ' && (100..=599).contains(&self.value) {
+                        self.status = Some(self.value);
+                    }
+                    false
+                };
+                if !valid {
+                    self.stopped = true;
+                    return Err(std::fmt::Error);
+                }
+                self.position += 1;
+            }
+            Ok(())
+        }
+    }
+    let mut current = Some(error);
+    // Bound malformed or cyclic custom error chains as well as formatting.
+    for _ in 0..8 {
+        let error = current?;
+        let mut prefix = StatusPrefix::default();
+        let _ = std::fmt::write(&mut prefix, format_args!("{error}"));
+        if prefix.status.is_some() {
+            return prefix.status;
+        }
+        current = error.source();
+    }
+    None
 }
 
 fn cas_retry_delay(attempt: usize) -> Duration {
@@ -276,7 +337,11 @@ impl CryptoBackupStore {
             };
             let creating = current.is_none();
             if self
-                .write_active_writer_fence(&fence, current.map(|(_, version)| version))
+                .write_active_writer_fence_observed(
+                    &fence,
+                    current.map(|(_, version)| version),
+                    Some(&mut observations),
+                )
                 .await?
             {
                 return Ok(());
@@ -289,10 +354,15 @@ impl CryptoBackupStore {
             "crypto writer activation attempts exhausted \
              (attempts={WRITER_ACTIVATION_RETRIES}, mutation_waits={mutation_waits}, \
              conditional_conflicts={conditional_conflicts}, create_conflicts={}, \
-             update_conflicts={}, observed_version_changes={})",
+             update_conflicts={}, observed_version_changes={}, \
+             http_404={}, http_412={}, http_other={}, http_unknown={})",
             observations.create_conflicts,
             observations.update_conflicts,
             observations.observed_version_changes,
+            observations.http_404,
+            observations.http_412,
+            observations.http_other,
+            observations.http_unknown,
         ))
     }
 
@@ -512,6 +582,16 @@ impl CryptoBackupStore {
         fence: &ActiveWriterFence,
         current: Option<object_store::UpdateVersion>,
     ) -> Result<bool, String> {
+        self.write_active_writer_fence_observed(fence, current, None)
+            .await
+    }
+
+    async fn write_active_writer_fence_observed(
+        &self,
+        fence: &ActiveWriterFence,
+        current: Option<object_store::UpdateVersion>,
+        observations: Option<&mut ActivationConflictObservations>,
+    ) -> Result<bool, String> {
         let mode = current.map_or(object_store::PutMode::Create, object_store::PutMode::Update);
         let payload = serde_json::to_vec(fence)
             .map_err(|error| format!("failed to encode crypto writer fence: {error}"))?;
@@ -529,8 +609,18 @@ impl CryptoBackupStore {
             .await
         {
             Ok(_) => Ok(true),
-            Err(object_store::Error::AlreadyExists { .. })
-            | Err(object_store::Error::Precondition { .. }) => Ok(false),
+            Err(error @ object_store::Error::AlreadyExists { .. })
+            | Err(error @ object_store::Error::Precondition { .. }) => {
+                if let Some(observations) = observations {
+                    match conflict_http_status(&error) {
+                        Some(404) => observations.http_404 += 1,
+                        Some(412) => observations.http_412 += 1,
+                        Some(_) => observations.http_other += 1,
+                        None => observations.http_unknown += 1,
+                    }
+                }
+                Ok(false)
+            }
             Err(error) => Err(format!(
                 "failed to publish crypto snapshot writer fence: {error}"
             )),
@@ -1391,7 +1481,7 @@ mod tests {
             .await
             .expect("activation should exhaust its existing retry budget")
             .unwrap_err();
-        assert_eq!(error, "crypto writer activation attempts exhausted (attempts=150, mutation_waits=150, conditional_conflicts=0, create_conflicts=0, update_conflicts=0, observed_version_changes=0)");
+        assert_eq!(error, "crypto writer activation attempts exhausted (attempts=150, mutation_waits=150, conditional_conflicts=0, create_conflicts=0, update_conflicts=0, observed_version_changes=0, http_404=0, http_412=0, http_other=0, http_unknown=0)");
         let after = backend.get(&path).await.unwrap().bytes().await.unwrap();
         assert_eq!(before, after);
         owner
@@ -1399,6 +1489,105 @@ mod tests {
             .await
             .unwrap();
         assert!(replacement.require_active_writer().await.is_err());
+    }
+
+    #[test]
+    fn conflict_status_prefix_stops_before_payload_and_fails_closed() {
+        #[derive(Debug)]
+        struct StatusError(&'static str);
+        impl std::fmt::Display for StatusError {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.0)?;
+                panic!("diagnostic must stop before formatting payload");
+            }
+        }
+        impl std::error::Error for StatusError {}
+        for (prefix, expected) in [
+            ("Server returned non-2xx status code: 404 ", Some(404)),
+            ("Server returned non-2xx status code: 412 ", Some(412)),
+            ("Server returned non-2xx status code: 409 ", Some(409)),
+            ("Server returned non-2xx status code: 999 ", None),
+            ("Server returned non-2xx status code: 4040 ", None),
+            ("Server returned non-2xx status code: xyz ", None),
+            ("Changed upstream format: ", None),
+            ("Error performing PUT ", None),
+        ] {
+            assert_eq!(conflict_http_status(&StatusError(prefix)), expected);
+        }
+        #[derive(Debug)]
+        struct Cycle;
+        impl std::fmt::Display for Cycle {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("unrecognized")
+            }
+        }
+        impl std::error::Error for Cycle {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(self)
+            }
+        }
+        assert_eq!(conflict_http_status(&Cycle), None);
+        let unknown = object_store::Error::Precondition {
+            path: "synthetic-sensitive-path".into(),
+            source: "synthetic-sensitive-body".into(),
+        };
+        assert_eq!(conflict_http_status(&unknown), None);
+    }
+
+    #[tokio::test]
+    async fn s3_update_404_and_412_retain_distinct_status_after_precondition_mapping() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        for status in [
+            axum::http::StatusCode::NOT_FOUND,
+            axum::http::StatusCode::PRECONDITION_FAILED,
+        ] {
+            let writes = Arc::new(AtomicUsize::new(0));
+            let write_count = Arc::clone(&writes);
+            let router = axum::Router::new().route(
+                "/fixture/control/active-writer",
+                axum::routing::put(move |headers: axum::http::HeaderMap| {
+                    let count = Arc::clone(&write_count);
+                    async move {
+                        assert_eq!(headers.get("if-match").unwrap(), "\"fixture-etag\"");
+                        count.fetch_add(1, Ordering::SeqCst);
+                        (status, "synthetic-sensitive-response-body")
+                    }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+            let backend = AmazonS3Builder::new()
+                .with_bucket_name("fixture")
+                .with_region("us-east-1")
+                .with_endpoint(format!("http://{address}"))
+                .with_allow_http(true)
+                .with_access_key_id("fixture-access")
+                .with_secret_access_key("fixture-secret")
+                .build()
+                .unwrap();
+            let result = tokio::time::timeout(
+                Duration::from_secs(10),
+                backend.put_opts(
+                    &ObjectPath::from(ACTIVE_WRITER_PATH),
+                    PutPayload::from_static(b"synthetic"),
+                    object_store::PutOptions {
+                        mode: object_store::PutMode::Update(object_store::UpdateVersion {
+                            e_tag: Some("\"fixture-etag\"".into()),
+                            version: None,
+                        }),
+                        ..Default::default()
+                    },
+                ),
+            )
+            .await;
+            server.abort();
+            let error = result.expect("bounded synthetic PUT").unwrap_err();
+            assert!(matches!(error, object_store::Error::Precondition { .. }));
+            assert_eq!(conflict_http_status(&error), Some(status.as_u16()));
+            assert_eq!(writes.load(Ordering::SeqCst), 1);
+        }
     }
 
     #[tokio::test]
@@ -1462,7 +1651,7 @@ mod tests {
         let error = result
             .expect("bounded local S3 fixture should finish")
             .unwrap_err();
-        assert_eq!(error, "crypto writer activation attempts exhausted (attempts=150, mutation_waits=0, conditional_conflicts=150, create_conflicts=0, update_conflicts=150, observed_version_changes=0)");
+        assert_eq!(error, "crypto writer activation attempts exhausted (attempts=150, mutation_waits=0, conditional_conflicts=150, create_conflicts=0, update_conflicts=150, observed_version_changes=0, http_404=0, http_412=150, http_other=0, http_unknown=0)");
         assert_eq!(reads.load(Ordering::SeqCst), WRITER_ACTIVATION_RETRIES);
         assert_eq!(writes.load(Ordering::SeqCst), WRITER_ACTIVATION_RETRIES);
     }
