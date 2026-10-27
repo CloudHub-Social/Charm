@@ -3,8 +3,9 @@ title: Isolated Spaces writer probe
 description: Preparation and execution holds for the synthetic writer precondition experiment.
 ---
 
-This is preparation for issue #573 and draft PR #589, not a production fix or a
-live execution receipt. The example is deliberately held before credential
+The owner paused this experiment. No bucket, credential, environment, binding
+or live run has been created. This retained preparation for issue #573 and
+draft PR #589 is not a production fix, rollout prerequisite or live receipt. The example is deliberately held before credential
 loading or network access. Do not remove that hold merely to run it.
 
 ## Approved target and limits

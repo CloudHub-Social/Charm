@@ -179,3 +179,21 @@ homeserver at `localhost:8008` plus `TEST_MATRIX_USERNAME` and
   Worker proxy in front of this service.
 - [Sentry observability](../sentry/) covers backend telemetry, release tags,
   and privacy scrubbing.
+
+### Writer fence reader compatibility
+
+The current reader accepts the original plain alphanumeric writer IDs (and
+hyphen/underscore fixture IDs) as well as JSON lease fences. Malformed structured
+fences fail closed with a payload-free error; they must not silently become
+legacy IDs with no lease. A regression fixture verifies that activation leaves
+such bytes unchanged. This is a parser hardening change, not evidence that
+malformed production data caused issue573.
+
+The running legacy revision092dba3 reads JSON bytes as a literal ID. A change to
+the current reader cannot retrofit that old process. A compatibility backport
+would need JSON decoding plus equivalent pending/expired ownership decisions;
+merely extracting writer_id does not preserve lease behavior. Such a backport
+also does not fix the legacy unconditional startup write or add mutation leases.
+Do not force a rollout, clear a fence, or waive conditional-write safeguards on
+the assumption that parsing alone resolves the startup failure. The Spaces probe
+is paused, and no new test infrastructure is a rollout prerequisite.

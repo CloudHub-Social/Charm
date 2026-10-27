@@ -446,14 +446,26 @@ impl CryptoBackupStore {
         if raw.is_empty() {
             return Err("crypto snapshot writer fence is empty".to_string());
         }
-        // Accept the original plain writer-id format during rolling upgrades.
-        let fence = serde_json::from_str(raw).unwrap_or_else(|_| ActiveWriterFence {
-            writer_id: raw.to_string(),
-            previous_writer_id: None,
-            activation_expires_at_ms: None,
-            mutation_owner: None,
-            mutation_expires_at_ms: None,
-        });
+        // Legacy writers generated alphanumeric identifiers. Tests and older
+        // operational fixtures also use hyphens/underscores. Structured or
+        // malformed JSON must never be reinterpreted as an unleased legacy ID.
+        let fence = if raw
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            ActiveWriterFence {
+                writer_id: raw.to_string(),
+                previous_writer_id: None,
+                activation_expires_at_ms: None,
+                mutation_owner: None,
+                mutation_expires_at_ms: None,
+            }
+        } else if raw.starts_with('{') {
+            serde_json::from_str(raw)
+                .map_err(|_| "crypto snapshot writer fence has invalid structured data".to_string())?
+        } else {
+            return Err("crypto snapshot writer fence has invalid structured data".to_string());
+        };
         Ok(Some((fence, version)))
     }
 
@@ -1482,6 +1494,29 @@ mod tests {
         assert_eq!(next.previous_writer_id.as_deref(), Some("legacy-fixture-owner"));
         assert!(next.mutation_owner.is_none());
         // This does not assert that an older binary can read the JSON fence.
+    }
+
+    #[tokio::test]
+    async fn malformed_structured_fence_is_not_reinterpreted_or_overwritten() {
+        for raw in [
+            r#"{"writer_id":"owner","mutation_owner":"busy","mutation_expires_at_ms":"invalid"}"#,
+            r#"{"writer_id":"owner","mutation_owner":"busy""#,
+            r#"["owner"]"#,
+            r#""owner""#,
+        ] {
+            let backend: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+            let path = ObjectPath::from(ACTIVE_WRITER_PATH);
+            backend.put(&path, PutPayload::from(raw.to_string())).await.unwrap();
+            let candidate = CryptoBackupStore::new_for_test_with_store(
+                [67; 32],
+                "candidate",
+                Arc::clone(&backend),
+                true,
+            );
+            let error = candidate.activate_writer().await.unwrap_err();
+            assert_eq!(error, "crypto snapshot writer fence has invalid structured data");
+            assert_eq!(backend.get(&path).await.unwrap().bytes().await.unwrap().as_ref(), raw.as_bytes());
+        }
     }
 
     #[test]
