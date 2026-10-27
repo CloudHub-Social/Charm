@@ -1,9 +1,12 @@
 import { useRef, type MouseEvent, type TouchEvent } from "react";
 import type { MessageActionsHandle } from "./MessageActions";
 
-/** A contextual toolbar must not contribute to the message's intrinsic width. */
+/**
+ * Keep actions out of intrinsic width and above the message being acted on.
+ * No gap separates the toolbar from its row, preserving the pointer hover path.
+ */
 export const messageActionSurfaceClassName =
-  "pointer-events-none absolute right-0 top-0 z-20 max-w-full flex-wrap rounded-md border border-border bg-card p-1 opacity-0 shadow-sm transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100";
+  "pointer-events-none absolute right-0 bottom-full z-20 max-w-full flex-wrap rounded-md border border-border bg-card p-1 opacity-0 shadow-sm transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100";
 
 function isInteractiveTarget(target: EventTarget | null): boolean {
   return (
