@@ -103,6 +103,7 @@ test("send, react, edit, reply, and delete a message", async ({ page }) => {
   await expect(originalRow.getByRole("button", { name: "Add reaction" })).toHaveCount(0);
 
   // --- react ---
+  await originalRow.hover();
   await originalRow.getByRole("button", { name: "React", exact: true }).click();
   // Scoped to the popover content: with `message_action_parity` on, the
   // quick-react row (Spec 37) also renders a same-labelled "React with 👍"
@@ -180,6 +181,7 @@ test("opening More-actions still closes another already-open Radix popover on th
     .getByText("cross-popover test", { exact: true })
     .locator("xpath=ancestor::*[contains(@class, 'group')][1]");
 
+  await row.hover();
   await row.getByRole("button", { name: "React", exact: true }).click();
   // Scoped to the popover content: with `message_action_parity` on, the
   // quick-react row (Spec 37) also renders a persistent same-labelled
@@ -302,6 +304,7 @@ test("shows who reacted in a hover tooltip", async ({ page }) => {
     .getByText("react to me", { exact: true })
     .locator("xpath=ancestor::*[contains(@class, 'group')][1]");
 
+  await row.hover();
   await row.getByRole("button", { name: "React", exact: true }).click();
   await page
     .locator('[data-slot="popover-content"]')
@@ -343,4 +346,22 @@ test("forwards a message to another joined room", async ({ page }) => {
 
   await page.getByRole("button", { name: OTHER_ROOM_NAME }).click();
   await expect(page.getByText("forward me", { exact: true })).toBeVisible();
+});
+
+test("native action buttons support keyboard entry and focus return", async ({ page }) => {
+  const composer = page.getByPlaceholder(`Message ${ROOM.name}`);
+  await composer.fill("keyboard action access");
+  await composer.press("Enter");
+  const row = page
+    .getByText("keyboard action access", { exact: true })
+    .locator("xpath=ancestor::*[contains(@class, 'group')][1]");
+  await expect(row).not.toHaveAttribute("tabindex", "0");
+  const more = row.getByRole("button", { name: "More actions" });
+  await more.focus();
+  await expect(row.locator("[data-message-actions]")).toHaveCSS("opacity", "1");
+  await more.press("Enter");
+  await expect(page.getByRole("menuitem", { name: "Reply", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(more).toBeFocused();
+  await captureSnapshot(page, "message-actions-keyboard-focus");
 });
