@@ -1,3 +1,4 @@
+import { useMessageActionPosition } from "./useMessageActionPosition";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import {
   Bookmark,
@@ -147,6 +148,7 @@ export interface MessageActionsHandle {
  * sibling react-shortcut button are both 44x44px hit targets per the
  * spec's touch-target minimum.
  */
+
 export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsProps>(
   function MessageActions(
     {
@@ -185,6 +187,7 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
     },
     ref,
   ) {
+    const surfaceRef = useMessageActionPosition();
     const messageActionParityEnabled = useFlag("message_action_parity");
     const bookmarksEnabled = useFlag("bookmarks");
     const [menuOpen, setMenuOpen] = useState(false);
@@ -228,6 +231,7 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
 
     return (
       <div
+        ref={surfaceRef}
         data-message-actions
         className={cn(
           "flex items-center gap-1",

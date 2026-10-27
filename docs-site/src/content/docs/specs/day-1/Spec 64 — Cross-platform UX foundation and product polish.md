@@ -284,6 +284,14 @@ is open, including when a portal owns focus outside the message DOM subtree.
 Both emoji-picker variants dismiss after a selection. More actions can replace
 an already-open picker without an extra dismiss step or a forced interaction.
 
+Toolbar placement uses the visible timeline and visual viewport as collision
+boundaries. Prefer above the target message, then below a short message when
+there is no room above. For a partially scrolled tall message, keep contextual
+controls in its visible slice. Scrolling and resizing update the active
+surface; inactive virtualized rows do not each subscribe to scroll events.
+The existing Radix menu, focus restoration, and gesture safeguards remain
+the owners of interaction, rather than introducing a second action system.
+
 Timeline gutters are measured item content. Bubbles retain their saved visual
 mode, and IRC reactions use the next line instead of crowding sender and text.
 These repairs do not promote the refresh flag or complete composer/tablet work.

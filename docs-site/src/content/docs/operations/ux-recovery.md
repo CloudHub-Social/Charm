@@ -74,6 +74,27 @@ relaxed timeouts, disabled rules, or lowered coverage gates are used.
 Record qualification against the subsequent implementation head in PR #601;
 the test-first run above is intentionally failing, not release evidence.
 
+## Scroll-boundary review follow-up
+
+Review comment 4395287876 identified that the above-row toolbar can be
+clipped at the timeline top or when the start of a tall message has scrolled
+out of view. Test-only head c7c6ed6cdf5f74a6582593f52c57e414bfe1d7af,
+in [Quality run 40603216306](https://github.com/CloudHub-Social/Charm/actions/runs/40603216306),
+reproduced 12 pointer/touch boundary failures while the 126 existing browser
+cases passed. The initial fixture iteration was corrected for signed-zero
+scroll coordinates and input capability before relying on that evidence.
+
+A shared positioning hook now owns timeline/visual-viewport containment for
+the existing action surface. Unit cases cover placement, active scrolling,
+resize, portal focus, cleanup, and CSS fallback. The 12 browser cases retain
+actual hit testing and ordinary menu clicks. Exact-head CI must qualify the
+implementation before the finding is closed.
+
+Eight gallery images changed by the earlier geometry repair were visually
+reviewed and copied from the CI-produced feature-docs candidate for 5c2db696.
+The feature-docs comparison thresholds are unchanged, and no gallery build
+or browser checks were run locally on the owner's Mac.
+
 ## Acceptance and remaining work
 
 Implementation is not release or physical-device acceptance. Record current-head
