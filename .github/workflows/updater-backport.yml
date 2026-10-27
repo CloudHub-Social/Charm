@@ -54,6 +54,8 @@ jobs:
         run: cargo fmt -p tauri-plugin-updater --check
       - name: Exercise production extraction helpers and upstream security boundary
         run: cargo test --locked -p tauri-plugin-updater --lib -- --test-threads=1
+      - name: Verify removed insecure Rust APIs cannot compile
+        run: cargo test --locked -p tauri-plugin-updater --doc
       - name: Include the local backport in bundled third-party notices
         run: node scripts/generate-third-party-licenses.mjs --cargo --output .artifacts/updater-licenses.txt
       - name: Verify updater attribution is present

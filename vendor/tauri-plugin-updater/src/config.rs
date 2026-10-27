@@ -101,15 +101,21 @@ where
         .collect::<Vec<_>>())
 }
 
-/// Updater configuration.
+/// Updater configuration. Charm does not expose insecure TLS options in Rust.
+///
+/// ```compile_fail,E0609
+/// let mut config = tauri_plugin_updater::Config::default();
+/// config.dangerous_accept_invalid_certs = true;
+/// ```
+///
+/// ```compile_fail,E0609
+/// let mut config = tauri_plugin_updater::Config::default();
+/// config.dangerous_accept_invalid_hostnames = true;
+/// ```
 #[derive(Debug, Clone, Default)]
 pub struct Config {
     /// Dangerously allow using insecure transport protocols for update endpoints.
     pub dangerous_insecure_transport_protocol: bool,
-    /// Dangerously accept invalid TLS certificates for update requests.
-    pub dangerous_accept_invalid_certs: bool,
-    /// Dangerously accept invalid hostnames for TLS certificates for update requests.
-    pub dangerous_accept_invalid_hostnames: bool,
     /// Updater endpoints.
     pub endpoints: Vec<Url>,
     /// Signature public key.
@@ -140,6 +146,14 @@ impl<'de> Deserialize<'de> for Config {
 
         let config = Config::deserialize(deserializer)?;
 
+        // Retain parsing of both upstream spellings so unsafe legacy settings
+        // fail explicitly instead of being silently ignored as unknown fields.
+        if config.dangerous_accept_invalid_certs || config.dangerous_accept_invalid_hostnames {
+            return Err(serde::de::Error::custom(
+                "Charm updater requires TLS certificate and hostname verification",
+            ));
+        }
+
         validate_endpoints(
             &config.endpoints,
             config.dangerous_insecure_transport_protocol,
@@ -148,8 +162,6 @@ impl<'de> Deserialize<'de> for Config {
 
         Ok(Self {
             dangerous_insecure_transport_protocol: config.dangerous_insecure_transport_protocol,
-            dangerous_accept_invalid_certs: config.dangerous_accept_invalid_certs,
-            dangerous_accept_invalid_hostnames: config.dangerous_accept_invalid_hostnames,
             endpoints: config.endpoints,
             pubkey: config.pubkey,
             windows: config.windows,
