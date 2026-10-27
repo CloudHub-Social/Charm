@@ -132,6 +132,20 @@ The workflow:
 The live-spec merge is important: applying `.do/app.yaml` as a full replacement
 would erase secret values that cannot exist in Git.
 
+## Writer activation diagnosis
+
+A writer-handoff timeout reports `attempts`, `mutation_waits`, and
+`conditional_conflicts` in the existing startup error. Counts distinguish waits
+for a live recovery mutation from failed conditional publication; mixed counts
+are possible. They contain no fence contents, owner identities, snapshot data,
+credentials, or key material. The existing retry budget, delays, leases and
+ownership checks are unchanged.
+
+A conflict count does not establish why publication failed or authorize clearing
+a fence. Preserve the old writer and durable data while investigating issue573.
+An automatic rollback and healthy routes prove service availability only; verify
+the provider's active source revision before claiming a candidate is deployed.
+
 ## Backend observability
 
 Set `CHARM_WEB_SERVER_SENTRY_DSN` to initialize the backend Sentry client;

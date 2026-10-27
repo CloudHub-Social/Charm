@@ -216,12 +216,15 @@ impl CryptoBackupStore {
         if !self.enforce_writer_fence {
             return Ok(());
         }
+        let mut mutation_waits = 0;
+        let mut conditional_conflicts = 0;
         for attempt in 0..WRITER_ACTIVATION_RETRIES {
             let current = self.active_writer_fence().await?;
             if current
                 .as_ref()
                 .is_some_and(|(fence, _)| fence.mutation_is_live(unix_time_ms()))
             {
+                mutation_waits += 1;
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 continue;
             }
@@ -245,9 +248,14 @@ impl CryptoBackupStore {
             {
                 return Ok(());
             }
+            conditional_conflicts += 1;
             tokio::time::sleep(cas_retry_delay(attempt)).await;
         }
-        Err("timed out waiting for an active recovery mutation before writer handoff".into())
+        Err(format!(
+            "timed out waiting for an active recovery mutation before writer handoff \
+             (attempts={WRITER_ACTIVATION_RETRIES}, mutation_waits={mutation_waits}, \
+             conditional_conflicts={conditional_conflicts})"
+        ))
     }
 
     /// Finalizes the provisional startup handoff only after fallible startup
@@ -1265,6 +1273,117 @@ mod tests {
         assert_eq!(next.writer_id, "fixture-replacement");
         assert_eq!(next.previous_writer_id.as_deref(), Some("fixture-owner"));
         assert!(next.mutation_owner.is_none());
+    }
+
+    #[tokio::test]
+    async fn activation_timeout_counts_live_mutation_waits_without_changing_the_fence() {
+        let backend: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let owner = CryptoBackupStore::new_for_test_with_store(
+            [65; 32],
+            "timeout-owner",
+            Arc::clone(&backend),
+            true,
+        );
+        owner.activate_writer().await.unwrap();
+        owner.commit_writer().await.unwrap();
+        owner
+            .acquire_recovery_mutation("timeout-request")
+            .await
+            .unwrap();
+        let (mut fence, version) = owner.active_writer_fence().await.unwrap().unwrap();
+        fence.mutation_expires_at_ms = Some(u64::MAX);
+        assert!(owner
+            .write_active_writer_fence(&fence, Some(version))
+            .await
+            .unwrap());
+        let path = ObjectPath::from(ACTIVE_WRITER_PATH);
+        let before = backend.get(&path).await.unwrap().bytes().await.unwrap();
+        let replacement = CryptoBackupStore::new_for_test_with_store(
+            [65; 32],
+            "timeout-contender",
+            Arc::clone(&backend),
+            true,
+        );
+
+        // Exercise the unchanged production budget and sleeps in hosted CI.
+        let error = tokio::time::timeout(Duration::from_secs(180), replacement.activate_writer())
+            .await
+            .expect("activation should exhaust its existing retry budget")
+            .unwrap_err();
+        assert_eq!(error, "timed out waiting for an active recovery mutation before writer handoff (attempts=150, mutation_waits=150, conditional_conflicts=0)");
+        let after = backend.get(&path).await.unwrap().bytes().await.unwrap();
+        assert_eq!(before, after);
+        owner
+            .require_recovery_mutation("timeout-request")
+            .await
+            .unwrap();
+        assert!(replacement.require_active_writer().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn activation_timeout_counts_s3_preconditions_without_claiming_a_live_mutation() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let reads = Arc::new(AtomicUsize::new(0));
+        let writes = Arc::new(AtomicUsize::new(0));
+        let read_count = Arc::clone(&reads);
+        let write_count = Arc::clone(&writes);
+        let router = axum::Router::new().route(
+            "/fixture/control/active-writer",
+            axum::routing::get(move || {
+                let count = Arc::clone(&read_count);
+                async move {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    (
+                        [
+                            ("etag", "\"fixture-etag\""),
+                            ("last-modified", "Tue, 27 Oct 2026 00:00:00 GMT"),
+                        ],
+                        r#"{"writer_id":"fixture-owner","previous_writer_id":null,"activation_expires_at_ms":null,"mutation_owner":null,"mutation_expires_at_ms":null}"#,
+                    )
+                }
+            })
+            .put(move |headers: axum::http::HeaderMap| {
+                let count = Arc::clone(&write_count);
+                async move {
+                    assert_eq!(headers.get("if-match").unwrap(), "\"fixture-etag\"");
+                    count.fetch_add(1, Ordering::SeqCst);
+                    (
+                        axum::http::StatusCode::PRECONDITION_FAILED,
+                        [("content-type", "application/xml")],
+                        "<Error><Code>PreconditionFailed</Code><Message>fixture conflict</Message></Error>",
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let backend: Arc<dyn ObjectStore> = Arc::new(
+            AmazonS3Builder::new()
+                .with_bucket_name("fixture")
+                .with_region("us-east-1")
+                .with_endpoint(format!("http://{address}"))
+                .with_allow_http(true)
+                .with_access_key_id("fixture-access")
+                .with_secret_access_key("fixture-secret")
+                .build()
+                .unwrap(),
+        );
+        let replacement = CryptoBackupStore::new_for_test_with_store(
+            [66; 32],
+            "fixture-contender",
+            backend,
+            true,
+        );
+        let result = tokio::time::timeout(Duration::from_secs(60), replacement.activate_writer()).await;
+        server.abort();
+        let error = result
+            .expect("bounded local S3 fixture should finish")
+            .unwrap_err();
+        assert_eq!(error, "timed out waiting for an active recovery mutation before writer handoff (attempts=150, mutation_waits=0, conditional_conflicts=150)");
+        assert_eq!(reads.load(Ordering::SeqCst), WRITER_ACTIVATION_RETRIES);
+        assert_eq!(writes.load(Ordering::SeqCst), WRITER_ACTIVATION_RETRIES);
     }
 
     #[tokio::test]
