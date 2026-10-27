@@ -16,6 +16,7 @@ const tauri = JSON.parse(read("src-tauri/tauri.conf.json"));
 const project = read("src-tauri/gen/apple/project.yml");
 const podfile = read("src-tauri/gen/apple/Podfile");
 const pbxproj = read("src-tauri/gen/apple/charm.xcodeproj/project.pbxproj");
+const personalInstaller = read("scripts/personal-ios.sh");
 const plist = read("src-tauri/gen/apple/charm_iOS/Info.plist");
 const cargoLock = read("Cargo.lock");
 const cargoManifest = read("Cargo.toml");
@@ -95,6 +96,14 @@ requireCondition(
 requireCondition(
   /&& test -f [^\n]*libapp\.a/.test(project) && /&& test -f [^\n]*libapp\.a/.test(pbxproj),
   "the generated Apple build phase must fail fast and verify the fresh Rust archive",
+);
+requireCondition(
+  /pnpm --filter charm tauri ios build\b/.test(personalInstaller),
+  "the personal iOS installer must select the charm workspace for its Tauri build",
+);
+requireCondition(
+  [project, pbxproj].every((source) => /pnpm --filter charm tauri ios xcode-script\b/.test(source)),
+  "project.yml and the generated Xcode phase must select the charm workspace",
 );
 
 requireCondition(
