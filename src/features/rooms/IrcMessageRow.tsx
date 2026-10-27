@@ -1,8 +1,7 @@
 import {
-  focusMessageActions,
-  handleMessageActionKey,
   messageActionSurfaceClassName,
   openMessageContextMenu,
+  useMessageActionTouch,
 } from "./messageActionSurface";
 import { cn } from "@/lib/utils";
 import { useDisplayFormats } from "@/features/appearance/useDisplayFormats";
@@ -66,25 +65,18 @@ export function IrcMessageRow({
   const nick = message.sender_display_name ?? message.sender;
   const { clockFormat } = useDisplayFormats();
   const spacingStyle = useMessageSpacing();
+  const touch = useMessageActionTouch(() => getActionsHandle(rowKey));
 
   return (
     <div
       id={`message-${message.event_id}`}
-      tabIndex={0}
-      role="group"
-      aria-label={`Message from ${message.sender_display_name ?? message.sender}`}
-      onClick={focusMessageActions}
-      onKeyDown={(event) => handleMessageActionKey(event, getActionsHandle(rowKey))}
       onContextMenu={(event) => openMessageContextMenu(event, getActionsHandle(rowKey))}
       style={spacingStyle}
       className={cn(
         "group relative flex min-w-0 w-full flex-wrap items-baseline gap-1 py-0.5",
         isNew && "animate-in fade-in slide-in-from-bottom-2 duration-300 ease-out",
       )}
-      onTouchStart={() => getActionsHandle(rowKey)?.startLongPress()}
-      onTouchEnd={() => getActionsHandle(rowKey)?.cancelLongPress()}
-      onTouchCancel={() => getActionsHandle(rowKey)?.cancelLongPress()}
-      onTouchMove={() => getActionsHandle(rowKey)?.cancelLongPress()}
+      {...touch}
     >
       <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
         {formatTime(message.timestamp_ms, clockFormat)}

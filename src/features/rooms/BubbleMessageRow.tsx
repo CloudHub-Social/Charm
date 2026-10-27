@@ -1,8 +1,7 @@
 import {
-  focusMessageActions,
-  handleMessageActionKey,
   messageActionSurfaceClassName,
   openMessageContextMenu,
+  useMessageActionTouch,
 } from "./messageActionSurface";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useDisplayFormats } from "@/features/appearance/useDisplayFormats";
@@ -70,15 +69,11 @@ export function BubbleMessageRow({
   const { clockFormat } = useDisplayFormats();
   const spacingStyle = useMessageSpacing();
   const showMeta = !sameSenderAsNext;
+  const touch = useMessageActionTouch(() => getActionsHandle(rowKey));
 
   return (
     <div
       id={`message-${message.event_id}`}
-      tabIndex={0}
-      role="group"
-      aria-label={`Message from ${message.sender_display_name ?? message.sender}`}
-      onClick={focusMessageActions}
-      onKeyDown={(event) => handleMessageActionKey(event, getActionsHandle(rowKey))}
       onContextMenu={(event) => openMessageContextMenu(event, getActionsHandle(rowKey))}
       style={spacingStyle}
       className={cn(
@@ -87,10 +82,7 @@ export function BubbleMessageRow({
         own && "ml-auto flex-row-reverse",
         isNew && "animate-in fade-in slide-in-from-bottom-2 duration-300 ease-out",
       )}
-      onTouchStart={() => getActionsHandle(rowKey)?.startLongPress()}
-      onTouchEnd={() => getActionsHandle(rowKey)?.cancelLongPress()}
-      onTouchCancel={() => getActionsHandle(rowKey)?.cancelLongPress()}
-      onTouchMove={() => getActionsHandle(rowKey)?.cancelLongPress()}
+      {...touch}
     >
       {!own &&
         (showAvatar ? (

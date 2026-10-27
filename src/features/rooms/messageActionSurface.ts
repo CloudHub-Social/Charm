@@ -1,4 +1,4 @@
-import type { KeyboardEvent, MouseEvent } from "react";
+import { useRef, type MouseEvent, type TouchEvent } from "react";
 import type { MessageActionsHandle } from "./MessageActions";
 
 /** A contextual toolbar must not contribute to the message's intrinsic width. */
@@ -8,34 +8,64 @@ export const messageActionSurfaceClassName =
 function isInteractiveTarget(target: EventTarget | null): boolean {
   return (
     target instanceof Element &&
-    target.closest("a, button, input, textarea, select, [contenteditable=true], [role=button]") !== null
+    target.closest(
+      "a, button, input, textarea, select, audio, video, [contenteditable], [role=button], [role=link], [role=slider]",
+    ) !== null
   );
 }
 
-/** A normal tap reveals actions without stealing links, media, or text selection. */
-export function focusMessageActions(event: MouseEvent<HTMLDivElement>): void {
-  if (isInteractiveTarget(event.target) || window.getSelection()?.toString()) return;
-  event.currentTarget.focus({ preventScroll: true });
+function hasTextSelection(): boolean {
+  return Boolean(window.getSelection()?.toString());
+}
+
+/**
+ * Touch gestures reveal the native menu button, not a focusable message container.
+ * Pointer hover and keyboard Tab use the same toolbar's CSS focus/hover states.
+ */
+export function useMessageActionTouch(getActions: () => MessageActionsHandle | undefined) {
+  const eligibleTap = useRef(false);
+
+  function cancelTouch() {
+    eligibleTap.current = false;
+    getActions()?.cancelLongPress();
+  }
+
+  function onTouchStart(event: TouchEvent<HTMLDivElement>) {
+    cancelTouch();
+    if (event.touches.length !== 1 || isInteractiveTarget(event.target) || hasTextSelection()) {
+      return;
+    }
+    eligibleTap.current = true;
+    getActions()?.startLongPress();
+  }
+
+  function onTouchEnd(event: TouchEvent<HTMLDivElement>) {
+    const reveal = eligibleTap.current;
+    cancelTouch();
+    if (!reveal || event.touches.length !== 0 || hasTextSelection()) return;
+    const trigger = event.currentTarget.querySelector<HTMLButtonElement>(
+      '[data-message-actions] button[aria-haspopup="menu"]',
+    );
+    // A long press has already moved focus into the open Radix menu. Do not
+    // steal that focus, or synthesize a click on a newly revealed control.
+    if (!trigger || trigger.getAttribute("aria-expanded") === "true") return;
+    event.preventDefault();
+    trigger.focus({ preventScroll: true });
+  }
+
+  return {
+    onTouchStart,
+    onTouchEnd,
+    onTouchMove: cancelTouch,
+    onTouchCancel: cancelTouch,
+  };
 }
 
 export function openMessageContextMenu(
   event: MouseEvent<HTMLDivElement>,
   actions: MessageActionsHandle | undefined,
 ): void {
-  if (isInteractiveTarget(event.target) || !actions?.openMenu) return;
+  if (isInteractiveTarget(event.target) || hasTextSelection() || !actions?.openMenu) return;
   event.preventDefault();
   actions.openMenu();
-}
-
-export function handleMessageActionKey(
-  event: KeyboardEvent<HTMLDivElement>,
-  actions: MessageActionsHandle | undefined,
-): void {
-  if (event.target !== event.currentTarget) return;
-  if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
-    event.preventDefault();
-    actions?.openMenu?.();
-  } else if (event.key === "Escape") {
-    event.currentTarget.blur();
-  }
 }
