@@ -1,3 +1,4 @@
+import { createPortal } from "react-dom";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { openMessageContextMenu, useMessageActionTouch } from "./messageActionSurface";
@@ -13,6 +14,13 @@ function setup(expanded = false) {
         onContextMenu={(event) => openMessageContextMenu(event, actions)}
       >
         <span>Message text</span>
+        <details>
+          <summary>
+            <span>Disclosure toggle</span>
+          </summary>
+          Collapsed content
+        </details>
+        {createPortal(<div>Portalled image surface</div>, document.body)}
         <a href="#detail">Link</a>
         <button type="button">Media control</button>
         <div data-message-actions>
@@ -120,5 +128,27 @@ describe("message action surface", () => {
     expect(actions.openMenu).toHaveBeenCalledOnce();
     fireEvent.contextMenu(screen.getByRole("link"));
     expect(actions.openMenu).toHaveBeenCalledOnce();
+  });
+  it("preserves native disclosure taps and context menus", () => {
+    const { trigger, actions } = setup();
+    const summary = screen.getByText("Disclosure toggle");
+    touchStart(summary);
+    expect(fireEvent.touchEnd(summary, { touches: [] })).toBe(true);
+    expect(fireEvent.contextMenu(summary)).toBe(true);
+    expect(trigger).not.toHaveFocus();
+    expect(actions.startLongPress).not.toHaveBeenCalled();
+    expect(actions.openMenu).not.toHaveBeenCalled();
+  });
+
+  it("does not consume touch or context events bubbling from a React portal", () => {
+    const { row, trigger, actions } = setup();
+    const target = screen.getByText("Portalled image surface");
+    expect(row).not.toContainElement(target);
+    touchStart(target);
+    expect(fireEvent.touchEnd(target, { touches: [] })).toBe(true);
+    expect(fireEvent.contextMenu(target)).toBe(true);
+    expect(trigger).not.toHaveFocus();
+    expect(actions.startLongPress).not.toHaveBeenCalled();
+    expect(actions.openMenu).not.toHaveBeenCalled();
   });
 });

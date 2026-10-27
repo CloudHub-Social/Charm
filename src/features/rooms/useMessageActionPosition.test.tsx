@@ -44,14 +44,14 @@ beforeEach(() => {
       disconnect() {}
     },
   );
-  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
-    function (this: HTMLElement) {
-      if (this.hasAttribute("data-virtuoso-scroller"))
-        return new DOMRect(0, 100, 800, viewportHeight);
-      if (this.id === "message-test") return new DOMRect(0, rowTop, 800, rowHeight);
-      return new DOMRect(400, rowTop, 300, toolbarHeight);
-    },
-  );
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement,
+  ) {
+    if (this.hasAttribute("data-virtuoso-scroller"))
+      return new DOMRect(0, 100, 800, viewportHeight);
+    if (this.id === "message-test") return new DOMRect(0, rowTop, 800, rowHeight);
+    return new DOMRect(400, rowTop, 300, toolbarHeight);
+  });
 });
 
 afterEach(() => {
