@@ -26,9 +26,30 @@ those test-integration failures are distinct from the reproduced geometry defect
 - Constrain message rows and Bubble sender/content widths without clipping prose.
 - Keep IRC reactions below the text rather than competing for horizontal space.
 - Use one bounded, out-of-flow action surface for the three message layouts.
-- Reveal actions through pointer hover, keyboard focus, or a normal text tap.
-  Preserve long-press and add keyboard/pointer context-menu entry to the existing menu.
+- Reveal actions through pointer hover, native-button keyboard focus, or a normal text tap.
+  Preserve long-press and pointer context-menu entry to the existing menu.
 - Preserve existing Matrix action permissions, local-echo rules, and menu dismissal.
+
+## Interaction correction and verification
+
+The first action implementation used focusable message containers. Accessibility
+lint rejected that markup. The correction keeps messages non-interactive and
+focuses the native menu button after a short text tap. Keyboard users reach the
+existing action buttons with Tab and activate their native menu behavior.
+Cancelled, scrolling, multi-touch, embedded-control, and selection gestures must
+not reveal actions or steal focus. A long press that already opened a menu must
+not move focus back to its trigger on release.
+
+At `4aa37da6a587d53f40a7920bf0db81251a5411c2`, the
+[Quality run](https://github.com/CloudHub-Social/Charm/actions/runs/40593093063)
+passed accessibility lint and the browser job, including the geometry matrix,
+existing reaction journeys, and new keyboard-entry/focus-return journey.
+Storybook build/accessibility also passed. The frontend job stopped at an IRC
+formatting difference; typecheck, unit coverage, dead-code checking, and build
+were not verified by that run. The
+[documentation run](https://github.com/CloudHub-Social/Charm/actions/runs/40593093595)
+passed content, build, and site-graph checks after the ledger links were corrected.
+These are revision-specific results, not a claim that a later head is qualified.
 
 ## Acceptance and remaining work
 
