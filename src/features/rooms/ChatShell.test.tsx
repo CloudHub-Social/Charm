@@ -4868,7 +4868,7 @@ describe("ChatShell", () => {
     expect(row).toBeTruthy();
 
     vi.useFakeTimers();
-    fireEvent.touchStart(row!);
+    fireEvent.touchStart(row!, { touches: [{ identifier: 1, target: row }] });
     vi.advanceTimersByTime(500);
     vi.useRealTimers();
 

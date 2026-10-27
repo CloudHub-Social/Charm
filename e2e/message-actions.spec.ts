@@ -113,6 +113,7 @@ test("send, react, edit, reply, and delete a message", async ({ page }) => {
     .locator('[data-slot="popover-content"]')
     .getByRole("button", { name: "React with 👍" })
     .click();
+  await expect(page.locator('[data-slot="popover-content"]')).toHaveCount(0);
   // Scoped to the pressed reaction chip: the quick-react row (Spec 37) also
   // renders a same-emoji "React with 👍" button in this row, so an unscoped
   // text query would match both it and the chip.
@@ -192,7 +193,13 @@ test("opening More-actions still closes another already-open Radix popover on th
     .getByRole("button", { name: "React with 👍" });
   await expect(popoverReactWithThumbsUp).toBeVisible();
 
-  await row.hover();
+  // A portalled picker owns focus and can cover the message. Its toolbar
+  // must remain usable without hovering the obscured message or forcing clicks.
+  await popoverReactWithThumbsUp.focus();
+  await page.mouse.move(4, 4);
+  const toolbar = row.locator("[data-message-actions]");
+  await expect(toolbar).toHaveCSS("opacity", "1");
+  await expect(toolbar).toHaveCSS("pointer-events", "auto");
   await row.getByRole("button", { name: "More actions" }).click();
 
   // The click both opened the dropdown (not a #226 self-dismiss no-op)...

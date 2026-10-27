@@ -86,12 +86,15 @@ describe("message action surface", () => {
 
   it("preserves text selected during a gesture and its native context menu", () => {
     const { trigger, text, actions } = setup();
-    touchStart(text);
     const selection = window.getSelection();
+    selection?.removeAllRanges();
+    touchStart(text);
     const range = document.createRange();
     range.selectNodeContents(text);
     selection?.addRange(range);
     try {
+      expect(selection?.toString()).toBe("Message text");
+      expect(actions.startLongPress).toHaveBeenCalledOnce();
       touchEnd(text);
       fireEvent.contextMenu(text);
       expect(trigger).not.toHaveFocus();
