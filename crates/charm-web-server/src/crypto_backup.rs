@@ -38,6 +38,36 @@ const SNAPSHOT_FORMAT_VERSION: u8 = 1;
 const RETAIN_COMMITTED_GENERATIONS: usize = 3;
 const ACTIVE_WRITER_PATH: &str = "control/active-writer";
 
+#[derive(Default)]
+struct ActivationConflictObservations {
+    create_conflicts: usize,
+    update_conflicts: usize,
+    observed_version_changes: usize,
+    previous_version: Option<Option<(Option<String>, Option<String>)>>,
+}
+
+impl ActivationConflictObservations {
+    fn observe(&mut self, version: Option<&object_store::UpdateVersion>) {
+        let current = version.map(|value| (value.e_tag.clone(), value.version.clone()));
+        if self
+            .previous_version
+            .as_ref()
+            .is_some_and(|previous| previous != &current)
+        {
+            self.observed_version_changes += 1;
+        }
+        self.previous_version = Some(current);
+    }
+
+    fn conflict(&mut self, creating: bool) {
+        if creating {
+            self.create_conflicts += 1;
+        } else {
+            self.update_conflicts += 1;
+        }
+    }
+}
+
 fn cas_retry_delay(attempt: usize) -> Duration {
     let base_ms = 10_u64 << attempt.min(4);
     let jitter_ms = u64::from(rand::random::<u8>() % 11);
@@ -218,8 +248,10 @@ impl CryptoBackupStore {
         }
         let mut mutation_waits = 0;
         let mut conditional_conflicts = 0;
+        let mut observations = ActivationConflictObservations::default();
         for attempt in 0..WRITER_ACTIVATION_RETRIES {
             let current = self.active_writer_fence().await?;
+            observations.observe(current.as_ref().map(|(_, version)| version));
             if current
                 .as_ref()
                 .is_some_and(|(fence, _)| fence.mutation_is_live(unix_time_ms()))
@@ -242,6 +274,7 @@ impl CryptoBackupStore {
                 mutation_owner: None,
                 mutation_expires_at_ms: None,
             };
+            let creating = current.is_none();
             if self
                 .write_active_writer_fence(&fence, current.map(|(_, version)| version))
                 .await?
@@ -249,12 +282,17 @@ impl CryptoBackupStore {
                 return Ok(());
             }
             conditional_conflicts += 1;
+            observations.conflict(creating);
             tokio::time::sleep(cas_retry_delay(attempt)).await;
         }
         Err(format!(
-            "timed out waiting for an active recovery mutation before writer handoff \
+            "crypto writer activation attempts exhausted \
              (attempts={WRITER_ACTIVATION_RETRIES}, mutation_waits={mutation_waits}, \
-             conditional_conflicts={conditional_conflicts})"
+             conditional_conflicts={conditional_conflicts}, create_conflicts={}, \
+             update_conflicts={}, observed_version_changes={})",
+            observations.create_conflicts,
+            observations.update_conflicts,
+            observations.observed_version_changes,
         ))
     }
 
@@ -1108,6 +1146,37 @@ mod tests {
     use matrix_sdk::ruma::device_id;
     use matrix_sdk::SessionMeta;
 
+    #[test]
+    fn activation_observations_separate_missing_stable_and_changing_versions() {
+        let mut observations = ActivationConflictObservations::default();
+        observations.observe(None);
+        observations.conflict(true);
+        observations.observe(None);
+        observations.conflict(true);
+        assert_eq!(observations.observed_version_changes, 0);
+
+        let first = object_store::UpdateVersion {
+            e_tag: Some("synthetic-etag-a".to_string()),
+            version: None,
+        };
+        observations.observe(Some(&first));
+        observations.conflict(false);
+        observations.observe(Some(&first));
+        observations.conflict(false);
+        assert_eq!(observations.observed_version_changes, 1);
+
+        let second = object_store::UpdateVersion {
+            e_tag: first.e_tag.clone(),
+            version: Some("synthetic-version-b".to_string()),
+        };
+        observations.observe(Some(&second));
+        observations.conflict(false);
+        observations.observe(None);
+        assert_eq!(observations.observed_version_changes, 3);
+        assert_eq!(observations.create_conflicts, 2);
+        assert_eq!(observations.update_conflicts, 3);
+    }
+
     fn dummy_session(mxid: &str) -> matrix_sdk::authentication::matrix::MatrixSession {
         matrix_sdk::authentication::matrix::MatrixSession {
             meta: SessionMeta {
@@ -1322,7 +1391,7 @@ mod tests {
             .await
             .expect("activation should exhaust its existing retry budget")
             .unwrap_err();
-        assert_eq!(error, "timed out waiting for an active recovery mutation before writer handoff (attempts=150, mutation_waits=150, conditional_conflicts=0)");
+        assert_eq!(error, "crypto writer activation attempts exhausted (attempts=150, mutation_waits=150, conditional_conflicts=0, create_conflicts=0, update_conflicts=0, observed_version_changes=0)");
         let after = backend.get(&path).await.unwrap().bytes().await.unwrap();
         assert_eq!(before, after);
         owner
@@ -1393,7 +1462,7 @@ mod tests {
         let error = result
             .expect("bounded local S3 fixture should finish")
             .unwrap_err();
-        assert_eq!(error, "timed out waiting for an active recovery mutation before writer handoff (attempts=150, mutation_waits=0, conditional_conflicts=150)");
+        assert_eq!(error, "crypto writer activation attempts exhausted (attempts=150, mutation_waits=0, conditional_conflicts=150, create_conflicts=0, update_conflicts=150, observed_version_changes=0)");
         assert_eq!(reads.load(Ordering::SeqCst), WRITER_ACTIVATION_RETRIES);
         assert_eq!(writes.load(Ordering::SeqCst), WRITER_ACTIVATION_RETRIES);
     }

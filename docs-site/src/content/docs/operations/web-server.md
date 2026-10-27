@@ -142,6 +142,16 @@ are possible. They contain no fence contents, owner identities, snapshot data,
 credentials, or key material. The existing retry budget, delays, leases and
 ownership checks are unchanged.
 
+`create_conflicts` and `update_conflicts` separate failed create-if-absent
+requests from failed version-conditional updates. `observed_version_changes`
+counts changes in the metadata returned by successive existing reads, including
+appearance or disappearance of the object; the first read is not a change.
+No additional storage request is made, and metadata values are never logged.
+Zero changes means only that the reads returned identical metadata, not that
+the provider returned fresh data. An update precondition error may also represent
+the dependency's translation of a missing-object response, so these counts do
+not establish an underlying HTTP status or prove provider incompatibility.
+
 A conflict count does not establish why publication failed or authorize clearing
 a fence. Preserve the old writer and durable data while investigating issue573.
 An automatic rollback and healthy routes prove service availability only; verify
