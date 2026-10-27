@@ -77,3 +77,9 @@ malformed values and ordinary/current configuration. Rustdoc compile-fail tests
 cover the removed fields/callback, with a compile-pass control for supported
 request customization. Existing extraction/signature tests and CodeQL remain
 required; no findings are suppressed or dismissed.
+
+
+The newly enabled full doctest suite exposed two existing upstream examples with
+an unspecified Tauri runtime type. Their hidden example wrappers now declare a
+generic `R: tauri::Runtime`; both examples remain compiled, with no ignored or
+filtered tests and no production change.

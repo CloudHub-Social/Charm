@@ -46,7 +46,8 @@ pub trait UpdaterExt<R: Runtime> {
     ///
     /// ```no_run
     /// use tauri_plugin_updater::UpdaterExt;
-    /// tauri::Builder::default()
+    /// # fn example<R: tauri::Runtime>() {
+    /// tauri::Builder::<R>::default()
     ///   .setup(|app| {
     ///     let handle = app.handle().clone();
     ///     tauri::async_runtime::spawn(async move {
@@ -54,6 +55,7 @@ pub trait UpdaterExt<R: Runtime> {
     ///     });
     ///     Ok(())
     ///   });
+    /// # }
     /// ```
     fn updater_builder(&self) -> UpdaterBuilder;
 
@@ -63,7 +65,8 @@ pub trait UpdaterExt<R: Runtime> {
     ///
     /// ```no_run
     /// use tauri_plugin_updater::UpdaterExt;
-    /// tauri::Builder::default()
+    /// # fn example<R: tauri::Runtime>() {
+    /// tauri::Builder::<R>::default()
     ///   .setup(|app| {
     ///     let handle = app.handle().clone();
     ///     tauri::async_runtime::spawn(async move {
@@ -71,6 +74,7 @@ pub trait UpdaterExt<R: Runtime> {
     ///     });
     ///     Ok(())
     ///   });
+    /// # }
     /// ```
     fn updater(&self) -> Result<Updater>;
 }
