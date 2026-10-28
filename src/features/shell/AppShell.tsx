@@ -106,6 +106,12 @@ export function AppShell({
     !verificationOverlayOpen &&
     !replacingChatWithContext &&
     (layout === "desktop" || (mobileView === "detail" && !!activeRoomId && rightPanel === null));
+  const contextVisible =
+    replacingChatWithContext &&
+    !showingActivity &&
+    !isSettingsActive &&
+    !chatObscured &&
+    !verificationOverlayOpen;
   const mobileBackGestureEnabled =
     uxRefreshEnabled &&
     layout === "mobile" &&
@@ -166,7 +172,7 @@ export function AppShell({
   );
 
   useEffect(() => {
-    if (replacingChatWithContext) {
+    if (contextVisible) {
       if (
         document.activeElement instanceof HTMLElement &&
         contentRef.current?.contains(document.activeElement)
@@ -176,12 +182,14 @@ export function AppShell({
       contextRef.current?.focus();
     } else {
       const target = contextReturnFocus.current;
+      // Hidden navigation cancels this return; never restore it during a
+      // later, unrelated visit to chat.
+      contextReturnFocus.current = null;
       if (target?.isConnected && chatVisible) {
         target.focus();
-        contextReturnFocus.current = null;
       }
     }
-  }, [replacingChatWithContext, chatVisible]);
+  }, [contextVisible, chatVisible]);
 
   useEffect(() => {
     if (chatVisible) return;

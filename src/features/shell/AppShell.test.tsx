@@ -538,3 +538,40 @@ describe("adaptive context and state ownership", () => {
     expect(screen.getByText("legacy-context")).toBeVisible();
   });
 });
+
+it.each(["settings", "activity"])(
+  "cancels context focus return when %s obscures chat",
+  (destination) => {
+    mockUseFlag.mockReturnValue(true);
+    mockUseAdaptiveLayout.mockReturnValue("medium");
+    const props = {
+      activeRoomId: "!synthetic:example.org",
+      selectionRequestId: 0,
+      mobileView: "detail" as const,
+      onMobileViewChange: vi.fn(),
+      spaceRail: <button>Independent navigation</button>,
+      roomList: null,
+      content: <input aria-label="Retained draft" />,
+      rightPanel: null,
+    };
+    const view = render(<AppShell {...props} />);
+    const draft = screen.getByRole("textbox", { name: "Retained draft" });
+    draft.focus();
+    const panel = <button>Context control</button>;
+    view.rerender(<AppShell {...props} rightPanel={panel} />);
+    expect(screen.getByRole("region", { name: "Room context" })).toHaveFocus();
+
+    const navigation = screen.getByRole("button", { name: "Independent navigation" });
+    navigation.focus();
+    const hiddenProps =
+      destination === "settings"
+        ? { isSettingsActive: true }
+        : { primaryDestination: "activity" as const };
+    view.rerender(<AppShell {...props} {...hiddenProps} rightPanel={panel} />);
+    expect(navigation).toHaveFocus();
+    view.rerender(<AppShell {...props} {...hiddenProps} />);
+    view.rerender(<AppShell {...props} />);
+    expect(navigation).toHaveFocus();
+    expect(draft).not.toHaveFocus();
+  },
+);
