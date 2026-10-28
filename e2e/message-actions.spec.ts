@@ -484,3 +484,23 @@ test("deliberate text selection keeps its native context menu", async ({ page })
     .poll(() => page.evaluate(() => window.getSelection()!.toString()))
     .toBe("Keep deliberate selection native");
 });
+
+test("selection in another message does not suppress this message's actions", async ({ page }) => {
+  const composer = page.getByPlaceholder(`Message ${ROOM.name}`);
+  for (const content of ["Select this earlier message", "Open this later message"]) {
+    await composer.fill(content);
+    await composer.press("Enter");
+    await expect(page.getByText(/sending…/)).toHaveCount(0);
+  }
+  await page.getByText("Select this earlier message", { exact: true }).evaluate((element) => {
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    selection.addRange(range);
+  });
+  await page.getByText("Open this later message", { exact: true }).click({ button: "right" });
+  await expect(page.getByRole("menuitem", { name: "Reply", exact: true })).toBeVisible();
+  await page.getByRole("menuitem", { name: "Reply", exact: true }).click();
+  await expect(page.getByText("Open this later message", { exact: true })).toHaveCount(2);
+});

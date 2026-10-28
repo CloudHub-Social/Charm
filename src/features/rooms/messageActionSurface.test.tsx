@@ -131,6 +131,27 @@ describe("message action surface", () => {
     }
   });
 
+  it("opens actions without disturbing a deliberate selection outside the message", () => {
+    const { text, actions } = setup();
+    const otherMessage = document.createElement("div");
+    otherMessage.textContent = "Another selected message";
+    document.body.append(otherMessage);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    const range = document.createRange();
+    range.selectNodeContents(otherMessage);
+    selection.addRange(range);
+    try {
+      fireEvent.pointerDown(text, { button: 2, pointerType: "mouse" });
+      expect(fireEvent.contextMenu(text, { button: 2 })).toBe(false);
+      expect(actions.openMenu).toHaveBeenCalledOnce();
+      expect(selection.toString()).toBe("Another selected message");
+    } finally {
+      selection.removeAllRanges();
+      otherMessage.remove();
+    }
+  });
+
   it("preserves a deliberate selection made before secondary pointer down", () => {
     const { text, actions } = setup();
     const selection = window.getSelection()!;
