@@ -74,15 +74,26 @@ export function AppShell({
   onSelectActivity,
   onSelectSpaces,
 }: AppShellProps) {
-  const layout = useAdaptiveLayout();
+  const adaptiveState = useAdaptiveLayout({ adaptive: true });
+  // Accept legacy two-state adapters while the shell consumers migrate.
+  const adaptive =
+    typeof adaptiveState === "string"
+      ? { width: adaptiveState === "mobile" ? "compact" : "wide" }
+      : adaptiveState;
+  const layout = adaptive.width === "compact" ? "mobile" : "desktop";
   const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
   const uxRefreshEnabled = useFlag("ux_refresh_v1");
   const mobileChatLayoutEnabled = mobileChatRedesignEnabled || uxRefreshEnabled;
+  const contextPanelOpen = rightPanel !== null;
+  const replacingChatWithContext =
+    uxRefreshEnabled && adaptive.width === "medium" && contextPanelOpen;
   const verificationOverlayOpen = useAtomValue(verificationOverlayOpenAtom);
   const { openSettings } = useSettingsNavigation();
   const { preferences, setRoomSidebarWidth } = usePanePreferences();
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   const contentRef = useRef<HTMLDivElement>(null);
+  const contextRef = useRef<HTMLElement>(null);
+  const contextReturnFocus = useRef<HTMLElement | null>(null);
   const [mobileDragX, setMobileDragX] = useState(0);
   const [mobileDragging, setMobileDragging] = useState(false);
   const showingActivity = uxRefreshEnabled && primaryDestination === "activity";
@@ -94,7 +105,16 @@ export function AppShell({
     !isSettingsActive &&
     !chatObscured &&
     !verificationOverlayOpen &&
+    !replacingChatWithContext &&
     (layout === "desktop" || (mobileView === "detail" && !!activeRoomId && rightPanel === null));
+  const contextVisible =
+    uxRefreshEnabled &&
+    layout === "desktop" &&
+    contextPanelOpen &&
+    !showingActivity &&
+    !isSettingsActive &&
+    !chatObscured &&
+    !verificationOverlayOpen;
   const mobileBackGestureEnabled =
     uxRefreshEnabled &&
     layout === "mobile" &&
@@ -155,6 +175,35 @@ export function AppShell({
   );
 
   useEffect(() => {
+    if (contextVisible) {
+      if (
+        document.activeElement instanceof HTMLElement &&
+        contentRef.current?.contains(document.activeElement)
+      ) {
+        contextReturnFocus.current = document.activeElement;
+      }
+      // A medium replacement needs focus in context, but a width change
+      // must not displace a user already interacting with the open panel.
+      if (replacingChatWithContext && !contextRef.current?.contains(document.activeElement)) {
+        contextRef.current?.focus();
+      }
+    } else {
+      const target = contextReturnFocus.current;
+      // Hidden navigation cancels this return; never restore it during a
+      // later, unrelated visit to chat.
+      contextReturnFocus.current = null;
+      if (
+        !contextPanelOpen &&
+        target?.isConnected &&
+        chatVisible &&
+        document.activeElement === document.body
+      ) {
+        target.focus();
+      }
+    }
+  }, [contextVisible, replacingChatWithContext, chatVisible, contextPanelOpen]);
+
+  useEffect(() => {
     if (chatVisible) return;
     // Upload ownership survives navigation, but hidden playback must not.
     contentRef.current?.querySelectorAll<HTMLMediaElement>("audio, video").forEach((media) => {
@@ -174,6 +223,7 @@ export function AppShell({
   return (
     <div
       data-ux-refresh={uxRefreshEnabled ? "true" : undefined}
+      data-layout-width={adaptive.width}
       className={
         layout === "desktop"
           ? "relative flex h-[100dvh] overflow-hidden bg-background"
@@ -204,6 +254,7 @@ export function AppShell({
         hidden={
           showingActivity ||
           showingMobileSpaces ||
+          replacingChatWithContext ||
           (layout === "mobile" && (mobileView !== "detail" || !activeRoomId || rightPanel !== null))
         }
         className={cn(
@@ -229,9 +280,17 @@ export function AppShell({
         !showingActivity &&
         rightPanel &&
         (uxRefreshEnabled ? (
-          <div className="z-30 h-full shrink-0 shadow-[-18px_0_45px_rgba(0,0,0,0.18)] max-[1199px]:absolute max-[1199px]:inset-y-0 max-[1199px]:right-0 min-[1200px]:shadow-none [&>div]:h-full">
+          <section
+            ref={contextRef}
+            tabIndex={-1}
+            aria-label="Room context"
+            className={cn(
+              "z-30 h-full min-w-0 [&>div]:h-full",
+              adaptive.width === "medium" ? "flex-1 [&>div]:w-full [&>div]:border-l-0" : "shrink-0",
+            )}
+          >
             {rightPanel}
-          </div>
+          </section>
         ) : (
           rightPanel
         ))}
@@ -260,8 +319,9 @@ export function AppShell({
           </div>
         ))}
       {layout === "mobile" &&
-        (uxRefreshEnabled ||
+        (isSettingsActive ||
           showingActivity ||
+          showingMobileSpaces ||
           !mobileChatLayoutEnabled ||
           mobileView === "list" ||
           !activeRoomId) && (
