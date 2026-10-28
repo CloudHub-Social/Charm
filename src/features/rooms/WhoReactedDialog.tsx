@@ -74,7 +74,11 @@ export function WhoReactedDialog({
             )}
           </div>
         ) : (
-          <ul className="flex max-h-80 flex-col gap-1 overflow-auto text-sm">
+          <ul
+            tabIndex={0}
+            aria-label="Reactors"
+            className="flex max-h-80 flex-col gap-1 overflow-auto text-sm"
+          >
             {details.map((detail) => (
               <li key={`${detail.sender}-${detail.origin_server_ts}`} className="min-w-0 break-all">
                 {detail.sender}

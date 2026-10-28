@@ -288,9 +288,8 @@ function ScopedReactionBar({
 
   return (
     <TooltipProvider>
-      <div
+      <fieldset
         className="mt-0.5 flex min-w-0 max-w-full flex-wrap items-center gap-1"
-        role="group"
         aria-label="Reactions"
         onTouchStart={(event) => event.stopPropagation()}
         onTouchEnd={(event) => event.stopPropagation()}
@@ -309,7 +308,7 @@ function ScopedReactionBar({
             <Plus size={12} />
           </button>
         </EmojiPicker>
-      </div>
+      </fieldset>
       <WhoReactedDialog
         open={modalKey !== null}
         reactionKey={modalKey}

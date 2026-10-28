@@ -33,7 +33,9 @@ for (const layout of ["bubble", "discord", "irc"]) {
       test(`${layout} ${width}px wraps ${count} reaction targets and separates details from toggles`, async ({
         page,
       }) => {
-        await page.setViewportSize({ width, height: 900 });
+        // Select the room through the desktop list before exercising compact
+        // rendering; mobile navigation is owned by the shell lane.
+        await page.setViewportSize({ width: 1440, height: 900 });
         await page.addInitScript(
           ({ messageLayout }) => {
             localStorage.setItem(
@@ -79,6 +81,8 @@ for (const layout of ["bubble", "discord", "irc"]) {
         });
         await page.goto("/");
         await page.getByRole("button", { name: ROOM.name }).click();
+        await expect(page.getByText("Synthetic reaction message", { exact: true })).toBeVisible();
+        await page.setViewportSize({ width, height: 900 });
         const bar = page.getByRole("group", { name: "Reactions", exact: true });
         await expect(bar).toBeVisible();
         const chips = bar.locator("button[aria-pressed]");
