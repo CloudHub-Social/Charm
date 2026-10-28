@@ -131,7 +131,7 @@ describe("message action surface", () => {
     }
   });
 
-  it("opens actions without disturbing a deliberate selection outside the message", () => {
+  it.each(["secondary", "keyboard"])("opens actions with outside selection via %s", (entry) => {
     const { text, actions } = setup();
     const otherMessage = document.createElement("div");
     otherMessage.textContent = "Another selected message";
@@ -142,10 +142,38 @@ describe("message action surface", () => {
     range.selectNodeContents(otherMessage);
     selection.addRange(range);
     try {
-      fireEvent.pointerDown(text, { button: 2, pointerType: "mouse" });
+      if (entry === "secondary") {
+        fireEvent.pointerDown(text, { button: 2, pointerType: "mouse" });
+      } else {
+        fireEvent.keyDown(text, { key: "ContextMenu" });
+      }
       expect(fireEvent.contextMenu(text, { button: 2 })).toBe(false);
       expect(actions.openMenu).toHaveBeenCalledOnce();
       expect(selection.toString()).toBe("Another selected message");
+    } finally {
+      selection.removeAllRanges();
+      otherMessage.remove();
+    }
+  });
+
+  it("preserves a deliberate selection spanning the clicked message and another node", () => {
+    const { text, actions } = setup();
+    const otherMessage = document.createElement("div");
+    otherMessage.textContent = "Another message";
+    document.body.append(otherMessage);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    const range = document.createRange();
+    range.setStart(text.firstChild!, 3);
+    range.setEnd(otherMessage.firstChild!, 7);
+    selection.addRange(range);
+    const selectedText = selection.toString();
+    try {
+      expect(selectedText).toContain("sage text");
+      fireEvent.pointerDown(text, { button: 2, pointerType: "mouse" });
+      expect(fireEvent.contextMenu(text, { button: 2 })).toBe(true);
+      expect(actions.openMenu).not.toHaveBeenCalled();
+      expect(selection.toString()).toBe(selectedText);
     } finally {
       selection.removeAllRanges();
       otherMessage.remove();

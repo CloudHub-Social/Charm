@@ -26,8 +26,14 @@ function isMessageTarget(event: {
   return event.target instanceof Node && event.currentTarget.contains(event.target);
 }
 
-function hasTextSelection(): boolean {
-  return Boolean(window.getSelection()?.toString());
+function hasTextSelection(within?: Node): boolean {
+  const selection = window.getSelection();
+  if (!selection?.toString()) return false;
+  if (!within) return true;
+  for (let index = 0; index < selection.rangeCount; index++) {
+    if (selection.getRangeAt(index).intersectsNode(within)) return true;
+  }
+  return false;
 }
 
 /**
@@ -51,7 +57,7 @@ export function useMessageActionTouch(getActions: () => MessageActionsHandle | u
       (event.button === 2 || (event.button === 0 && event.ctrlKey)) &&
       isMessageTarget(event) &&
       !isInteractiveTarget(event.target)
-        ? hasTextSelection()
+        ? hasTextSelection(event.currentTarget)
         : null;
   }
 
@@ -115,7 +121,7 @@ function openMessageContextMenu(
   if (
     !isMessageTarget(event) ||
     isInteractiveTarget(event.target) ||
-    (selectedBeforeClick ?? hasTextSelection()) ||
+    (selectedBeforeClick ?? hasTextSelection(event.currentTarget)) ||
     !actions?.openMenu
   )
     return;

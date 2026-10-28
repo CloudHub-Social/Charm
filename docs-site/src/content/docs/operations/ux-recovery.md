@@ -464,6 +464,42 @@ approval and native/device evidence separately. Codex remains owner-waived, neve
 passed. Serial integration file-release conditions and #566/#591/#606 custody
 are unchanged; no shared wiring or merge is authorized by this repair evidence.
 
+### Selection scope follow-up
+
+Substantive finding [4401222997](https://github.com/CloudHub-Social/Charm/pull/601#discussion_r4401222997)
+identified that a deliberate selection in another message suppressed the clicked
+message's actions. Test-only `382a6d8b12d597a94face7e1b10310323406d31a`,
+[Quality 40698409012](https://github.com/CloudHub-Social/Charm/actions/runs/40698409012),
+reproduced it in frontend job 122852279944 (2,259 passed, one event assertion failed)
+and browser job 122852280076 (192 passed, one focused failure, one separate
+timeline-scroll case passed on retry, 34 skips). No failure is attributed to a
+coverage floor, no timeout/assertion was weakened, and the scroll flake is retained.
+
+The mouse selection snapshot and context fallback now check whether a selected
+DOM range intersects the clicked message row. An unrelated selection does not
+suppress actions; existing selected text within or spanning the row retains its
+native context menu. Touch selection guards stay intact. The code never clears
+selection. Added unit coverage includes keyboard context entry with unrelated
+selection and a deliberate range spanning the clicked row; the real-right-click
+browser journey verifies Reply targets the newly clicked message. Fresh exact-head
+CI and screenshots are required; final immutable receipts are recorded in this PR
+and the same owner handoff without treating predecessor passes as qualification.
+
+Control-release repair `316609fba9aca4e304991a61826742867a93785d` passed frontend
+(2,259 tests, 179 files) and browser (193 passed, 34 skipped, separate scroll witness
+passed) in [Quality 40697488214](https://github.com/CloudHub-Social/Charm/actions/runs/40697488214).
+Thread PRRT_kwDOTNc8Es6xIsZW was resolved after RED-to-GREEN evidence. Superseded
+native jobs were cancelled to advance the new head; no aggregate Quality pass is
+claimed. The exact `316609fb` preview 40697487908/job 122848115444 failed proxy
+verification with HTTP503 at 13:34:24Z after Worker deployment. Existing backend
+route 6469710280 remains with #606; no backend change or blind preview retry.
+
+No acceptance of physical macOS/WKWebView, iPhone or iPad is inferred. Exact-head
+snapshot approval remains separate; old set 120728 is not approval of these repairs.
+Codex approval/receipt/quota remains owner-waived, not passed; substantive defects
+are still repaired. All serial file-release dependencies and P0–P12 ownership stay
+as recorded above. No shared integration, feature promotion, merge or release.
+
 ## Acceptance and remaining work
 
 Implementation is not release or physical-device acceptance. Record current-head
