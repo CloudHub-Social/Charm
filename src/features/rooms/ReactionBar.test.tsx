@@ -534,4 +534,66 @@ describe("ReactionBar", () => {
     expect(await screen.findByText("@bob:example.org")).toBeInTheDocument();
     expect(getReactionDetails).toHaveBeenCalledTimes(2);
   });
+
+  it.each([
+    { accountId: "@other:example.org" },
+    { roomId: "!other:example.org" },
+    { eventId: "$other" },
+  ])("isolates pending details across context changes: %j", async (changed) => {
+    let resolveOld!: (details: Array<{ sender: string; origin_server_ts: number }>) => void;
+    getReactionDetails
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveOld = resolve;
+        }),
+      )
+      .mockResolvedValueOnce([{ sender: "@new:example.org", origin_server_ts: 2 }]);
+    const props = {
+      accountId: "@first:example.org",
+      roomId: "!room:example.org",
+      eventId: "$event",
+      reactions: [{ key: "👍", count: 1, reacted_by_me: false }],
+      onToggle: vi.fn(),
+    };
+    const { rerender } = render(<ReactionBar {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "View all 1 reactions for 👍" }));
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    rerender(<ReactionBar {...props} {...changed} />);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    resolveOld([{ sender: "@old:example.org", origin_server_ts: 1 }]);
+    fireEvent.click(screen.getByRole("button", { name: "View all 1 reactions for 👍" }));
+    expect(await screen.findByText("@new:example.org")).toBeInTheDocument();
+    expect(screen.queryByText("@old:example.org")).not.toBeInTheDocument();
+  });
+
+  it("closes details when the parity flag is revoked", async () => {
+    const props = {
+      roomId: "!room:example.org",
+      eventId: "$event",
+      reactions: [{ key: "👍", count: 1, reacted_by_me: false }],
+      onToggle: vi.fn(),
+    };
+    const { rerender } = render(<ReactionBar {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "View all 1 reactions for 👍" }));
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    mockUseFlag.mockReturnValue(false);
+    rerender(<ReactionBar {...props} />);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /View all/ })).not.toBeInTheDocument();
+  });
+
+  it("does not look up reactors for a failed local echo", () => {
+    render(
+      <ReactionBar
+        reactions={[{ key: "👍", count: 1, reacted_by_me: false }]}
+        onToggle={vi.fn()}
+        disabled
+        roomId="!room:example.org"
+        eventId="txn-failed"
+      />,
+    );
+    expect(screen.getByRole("button", { name: /^👍1$/ })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /View all/ })).not.toBeInTheDocument();
+    expect(getReactionDetails).not.toHaveBeenCalled();
+  });
 });

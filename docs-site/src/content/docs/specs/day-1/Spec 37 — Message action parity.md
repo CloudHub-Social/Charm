@@ -20,9 +20,28 @@ viewer of the raw event); **Report message** (reusing the redact-with-reason
 dialog's shared confirm-with-reason primitive) via a new `report_event` Tauri
 command; **Edit history** viewing (original + each `m.replace` revision,
 oldest-first) via a new `get_edit_history` command; and the UI-parity additions —
-a hover tooltip on each reaction chip naming reactors (with a "View all" overflow
-into a fuller who-reacted dialog once the list is long), and a quick-react row of
+a hover tooltip on each reaction chip naming reactors and a full who-reacted
+dialog, and a quick-react row of
 ~4 recent/frequent one-tap emoji tracked in local storage.
+
+### P3 reaction interaction repair
+
+Reaction chips show emoji and count with nonoverlapping targets of at least
+44×44 CSS pixels, wrapping within the available conversation width. An ordinary
+tap/click toggles the user's reaction. With `message_action_parity` enabled,
+hover/focus reveals identities; holding a chip, using its context action, or
+pressing Shift+F10 opens the existing full reactor dialog without toggling.
+Each chip also has a screen-reader-accessible details button that becomes visible
+on keyboard focus; repeated detail labels are absent from the ordinary view.
+The viewer retains loading, error/retry, full Matrix IDs, and dismissal/focus
+recovery. Cache and viewer state are isolated by account, room, event and flag;
+local echoes cannot fetch server-event details or mutate reactions.
+
+This component repair is not programme acceptance. Qualification requires
+current-head hosted unit/browser/axe checks and screenshot inspection. The
+shared UX recovery ledger and cross-package integration remain with the P1/P2
+integrator. Physical iPhone/iPad long-press, VoiceOver, rotation and multitasking
+acceptance require separate current-build device evidence.
 
 The raw-event source viewer isolates its state per open room/event pair. Switching
 targets or reopening starts with empty source and copy feedback; loading or failed
