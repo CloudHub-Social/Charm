@@ -11,7 +11,7 @@ spec.loader.exec_module(module)
 
 class CutoverTest(unittest.TestCase):
     def valid(self):
-        return {"active_deployment": {"spec": {"maintenance": {"archive": True}}},
+        return {"active_deployment": {"spec": {"maintenance": {"archive": True}, "services": [{"name": "api", "instance_count": 1}]}},
                 "spec": {"services": [{"instance_count": 1}]}}
 
     def test_archived_without_instances(self):
@@ -39,7 +39,7 @@ class CutoverTest(unittest.TestCase):
 
     def test_completed_same_revision_restart(self):
         app = self.valid()
-        app["active_deployment"] = {"phase": "ACTIVE", "spec": {"services": [{
+        app["active_deployment"] = {"phase": "ACTIVE", "services": [{"name": "api", "source_commit_hash": "qualified"}], "spec": {"services": [{"name": "api",
             "instance_count": 1, "envs": [
                 {"key": "CHARM_WEB_SERVER_STATE_BUCKET", "value": "charm-api-state-production"},
                 {"key": "CHARM_WEB_SERVER_EXPECTED_SOURCE_SHA", "value": "qualified"},
@@ -47,3 +47,11 @@ class CutoverTest(unittest.TestCase):
         module.validate(app, [{"id": "synthetic"}], "qualified")
         with self.assertRaises(ValueError):
             module.validate(app, [{"id": "synthetic"}], "different")
+
+        app["active_deployment"]["services"][0]["source_commit_hash"] = "legacy"
+        with self.assertRaises(ValueError):
+            module.validate(app, [{"id": "synthetic"}], "qualified")
+        app["active_deployment"]["services"][0]["source_commit_hash"] = "qualified"
+        app["active_deployment"]["spec"]["jobs"] = [{"name": "unexpected"}]
+        with self.assertRaises(ValueError):
+            module.validate(app, [{"id": "synthetic"}], "qualified")

@@ -14,7 +14,17 @@ def validate(app, instances, revision=None):
         raise ValueError("pending rollout prevents cutover")
     active_spec = active.get("spec") or {}
     services = active_spec.get("services") or []
-    if revision and active.get("phase") == "ACTIVE" and not maintenance.get("archive") and len(services) == 1:
+    for candidate in [app.get("spec") or {}, active_spec]:
+        if candidate.get("workers") or candidate.get("jobs"):
+            raise ValueError("unexpected background components prevent cutover")
+        configured = candidate.get("services") or []
+        if len(configured) != 1 or configured[0].get("instance_count") != 1:
+            raise ValueError("cutover requires existing single-instance capacity")
+    deployed = active.get("services") or []
+    actual_revision_matches = (len(deployed) == 1
+                               and deployed[0].get("name") == services[0].get("name")
+                               and deployed[0].get("source_commit_hash") == revision)
+    if revision and actual_revision_matches and active.get("phase") == "ACTIVE" and not maintenance.get("archive") and len(services) == 1:
         env = {e.get("key"): e.get("value") for e in services[0].get("envs", [])}
         # This exact guarded binary cannot serve before committing migration.
         # Permit its later same-revision restart without consulting stale sources.
@@ -48,6 +58,11 @@ if __name__ == "__main__":
             raise ValueError("cutover app differs from approved target")
         apps = read("get", APP)
         app = apps[0] if isinstance(apps, list) else apps
+        deployment_id = (app.get("active_deployment") or {}).get("id")
+        if not deployment_id:
+            raise ValueError("active deployment identity missing")
+        deployment = read("get-deployment", APP, deployment_id)
+        app["active_deployment"] = deployment[0] if isinstance(deployment, list) else deployment
         instances = read("list-instances", APP)
         if not isinstance(instances, list):
             raise ValueError("unknown provider instance response")

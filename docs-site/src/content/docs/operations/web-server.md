@@ -318,3 +318,11 @@ The release controller runs `scripts/verify-state-cutover.py` before an initial
 cutover update. The same read-only gate is mandatory immediately before the
 secure credential-install update; its receipt must show archived active spec,
 zero instances, no pending rollout and unchanged single-instance capacity.
+
+The automatic release workflow refuses an update until the approved state bucket
+binding is present. This lets the protected merge complete without accidentally
+launching an additional legacy-backend deployment. The single secure binding update
+must apply the qualified merged source and pass the same controller gate; do not
+install bindings early or follow that update with a duplicate workflow dispatch.
+After migration, same-revision restart requires provider-reported actual source
+identity, matching guarded configuration and no additional background components.
