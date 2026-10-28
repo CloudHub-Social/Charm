@@ -301,6 +301,7 @@ export function AppShell({
       {layout === "mobile" &&
         (isSettingsActive ||
           showingActivity ||
+          showingMobileSpaces ||
           !mobileChatLayoutEnabled ||
           mobileView === "list" ||
           !activeRoomId) && (

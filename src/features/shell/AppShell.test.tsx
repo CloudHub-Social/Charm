@@ -266,9 +266,9 @@ describe("AppShell", () => {
     mockUseAdaptiveLayout.mockReturnValue("mobile");
     render(
       <AppShell
-        activeRoomId={null}
+        activeRoomId="!selected:example.org"
         selectionRequestId={0}
-        mobileView="list"
+        mobileView="detail"
         onMobileViewChange={vi.fn()}
         primaryDestination="spaces"
         spaceRail={<div>desktop-space-rail</div>}
