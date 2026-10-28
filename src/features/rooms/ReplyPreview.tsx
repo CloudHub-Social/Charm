@@ -44,7 +44,7 @@ export function ReplyPreview({
           <span className="text-xs font-semibold text-secondary-foreground">
             Replying to {senderLabel}
           </span>
-          <span className={cn("truncate text-muted-foreground", unresolved && "italic")}>
+          <span className={cn("max-w-full truncate text-muted-foreground", unresolved && "italic")}>
             {previewLabel}
           </span>
         </div>
@@ -65,12 +65,12 @@ export function ReplyPreview({
       type="button"
       onClick={onClick}
       className={cn(
-        "flex w-full max-w-full flex-col items-start rounded-sm border-l-2 border-primary bg-primary/5 px-2 py-1 text-left text-xs",
+        "flex min-w-0 w-full max-w-full flex-col items-start rounded-sm border-l-2 border-primary bg-primary/5 px-2 py-1 text-left text-xs",
         className,
       )}
     >
-      <span className="font-semibold text-primary">{senderLabel}</span>
-      <span className={cn("truncate text-muted-foreground", unresolved && "italic")}>
+      <span className="max-w-full break-words font-semibold text-primary">{senderLabel}</span>
+      <span className={cn("max-w-full truncate text-muted-foreground", unresolved && "italic")}>
         {previewLabel}
       </span>
     </button>

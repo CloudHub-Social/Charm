@@ -278,6 +278,8 @@ and activate the menu with Enter, Space, or ArrowDown; Escape returns focus to
 its trigger. The message container is not itself a button or a tab stop. Embedded
 controls, links, selected text, scrolling, and cancelled gestures retain their
 own interactions. Touch does not permanently show the quick-reaction row.
+The right-button release that opens a context menu cannot select one of its
+items; selecting an action requires a separate primary click or keyboard action.
 
 The toolbar remains visible and hit-testable while its nested picker or menu
 is open, including when a portal owns focus outside the message DOM subtree.

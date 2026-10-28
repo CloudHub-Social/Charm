@@ -155,6 +155,38 @@ long-press, screen-reader, rotation and multitasking acceptance remains blocked
 pending a genuine current-build device record from the owner/tester. No merge,
 release or flag promotion is implied.
 
+The expanded matrix at `361c58f4` produced **177 passes, 12 failures and 34 skips**
+in [browser job 122582627136](https://github.com/CloudHub-Social/Charm/actions/runs/40617260811/job/122582627136).
+All four widths reproduced overflowing long reply quotes in Bubble and Modern,
+and long file chips in Bubble. For example, Modern at 390px had 3,476px of
+row overflow while document overflow remained zero. The quote now constrains
+its author and preview to the available width; the file-media flex item may
+shrink within the row. The tests retain zero row/ancestor-overflow assertions
+and local wide-content-scroll checks. These are container repairs, not global
+clipping or relaxed tolerances.
+
+## Context-menu release review
+
+Seer finding [4396133951](https://github.com/CloudHub-Social/Charm/pull/601#discussion_r4396133951)
+reviewed head `361c58f442d067403ad4d3ad6cb38327f3037ef2`. Radix MenuItem
+synthesizes a click on pointer release when the press began outside that item.
+The message menu now prevents non-primary releases in capture before that
+handler runs, preserving normal left-click and keyboard selection. A browser
+regression holds the opening right-click, moves onto Reply, releases it and
+requires the menu to remain open until a separate primary click.
+
+The same head's frontend and iOS jobs stopped at TS2322 in the expanded test's
+ancestor walk: Playwright exposes HTMLElement or SVGElement. That walk now uses
+Element, and original plain-content snapshot names are retained. These source
+corrections await subsequent CI; the stopped jobs did not verify unit coverage
+or application/native builds.
+
+Hosted Codex review explicitly reported exhausted payer quota on the new head
+in [comment 6458483095](https://github.com/CloudHub-Social/Charm/pull/601#issuecomment-6458483095).
+A gate runner completing is not a clean code-review result. The payer/repository
+administrator must restore the existing review capability, then obtain a fresh
+exact-head review; settings and review gates are not changed by this task.
+
 ## Acceptance and remaining work
 
 Implementation is not release or physical-device acceptance. Record current-head

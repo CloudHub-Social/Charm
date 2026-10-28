@@ -113,7 +113,7 @@ for (const layout of ["bubble", "discord", "irc"] as const) {
           .poll(() =>
             row.evaluate((element) => {
               const violations: string[] = [];
-              for (let node: HTMLElement | null = element; node; node = node.parentElement) {
+              for (let node: Element | null = element; node; node = node.parentElement) {
                 if (node.scrollWidth > node.clientWidth)
                   violations.push(node.tagName + ":" + node.className);
               }
@@ -147,7 +147,12 @@ for (const layout of ["bubble", "discord", "irc"] as const) {
               .toEqual({ owned: true, reachable: true });
           }
         }
-        await captureSnapshot(page, `conversation-geometry-${layout}-${width}-${content}`);
+        await captureSnapshot(
+          page,
+          content === "plain"
+            ? `conversation-geometry-${layout}-${width}`
+            : `conversation-geometry-${layout}-${width}-${content}`,
+        );
 
         const more = row.getByRole("button", { name: "More actions" });
         if (content === "plain") await row.tap();

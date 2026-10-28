@@ -372,3 +372,28 @@ test("native action buttons support keyboard entry and focus return", async ({ p
   await expect(more).toBeFocused();
   await captureSnapshot(page, "message-actions-keyboard-focus");
 });
+
+test("opening right-click release cannot select a menu action", async ({ page }) => {
+  const composer = page.getByPlaceholder(`Message ${ROOM.name}`);
+  await composer.fill("Right click must only open actions");
+  await composer.press("Enter");
+  await expect(page.getByText(/sending…/)).toHaveCount(0);
+  const row = page.locator('[id="message-$1"]');
+  await expect(row).toBeVisible();
+  const body = row.getByText("Right click must only open actions", { exact: true });
+  await body.hover();
+  await page.mouse.down({ button: "right" });
+  const reply = page.getByRole("menuitem", { name: "Reply", exact: true });
+  await expect(reply).toBeVisible();
+  // Exercise a release over an actual actionable item after opening the menu
+  // with the same physical button, without dispatching synthetic DOM events.
+  const bounds = await reply.boundingBox();
+  expect(bounds).not.toBeNull();
+  await page.mouse.move(bounds!.x + bounds!.width / 2, bounds!.y + bounds!.height / 2);
+  await page.mouse.up({ button: "right" });
+  await expect(page.getByRole("menu")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Cancel reply" })).toHaveCount(0);
+  await reply.click();
+  await expect(page.getByRole("button", { name: "Cancel reply" })).toBeVisible();
+  await captureSnapshot(page, "message-actions-context-release");
+});

@@ -333,7 +333,14 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
               <MoreHorizontal size={16} />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
+          <DropdownMenuContent
+            align="end"
+            onPointerUpCapture={(event) => {
+              // Radix can synthesize a click for a release whose press began
+              // outside the menu. The opening right-click must not select an item.
+              if (event.button !== 0) event.preventDefault();
+            }}
+          >
             {!isRedacted && (
               <>
                 {canReply && (
