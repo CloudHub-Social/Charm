@@ -296,8 +296,17 @@ encryption), verifies bytes, and rechecks the source inventory. Source objects a
 never deleted or rewritten. Conflicting destination bytes halt migration. Copies
 are bounded to ten sessions (the budget-estimate population), 1 MiB/object and 64 MiB total session data. Exceeding
 these bounds requires a separately reviewed sizing decision; do not raise them
-silently. R2/source migration client transport retries are disabled; interrupted
-copies can resume only against identical destination bytes.
+silently. The limit includes expired records and tombstones: migration preserves
+opaque ciphertext rather than interpreting or discarding records. R2/source clients
+allow one transport retry, with a five-second retry eligibility window; this is not
+an overall request deadline. Conditional headers remain intact and HTTP 412 is not
+retried by the transport. Interrupted copies resume only against identical bytes.
+
+For the ten-session planning scenario, doubling the estimated operations for that
+single retry remains below one million Class A and seven million Class B requests
+per month. At Standard pricing, rounding to those billing units and one GB-month
+costs approximately USD7.035 without assuming free-tier availability. This is a
+traffic estimate, not a billing cap; unplanned traffic still requires reassessment.
 
 The completion receipt is written only after verification. Subsequent starts read
 that receipt and never reimport original session records, including records deleted

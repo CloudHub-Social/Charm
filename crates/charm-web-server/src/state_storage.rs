@@ -1,10 +1,20 @@
 //! Explicit state authority. Never fall back to legacy Spaces when R2 is selected.
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 use object_store::{aws::AmazonS3Builder, ObjectStore, RetryConfig};
 
 const PREFIX: &str = "CHARM_WEB_SERVER_STATE_";
 const ACCOUNT: &str = "bb346e009981b1b928a5b8e008f7021d";
 const BUCKET: &str = "charm-api-state-production";
+
+// At most two transport attempts. Conditional headers and retryability remain
+// owned by object_store; HTTP 412 is never retried as a transient failure.
+fn retry_policy() -> RetryConfig {
+    RetryConfig {
+        max_retries: 1,
+        retry_timeout: Duration::from_secs(5),
+        ..Default::default()
+    }
+}
 
 pub fn configured() -> bool {
     std::env::vars_os().any(|(name, _)| name.to_string_lossy().starts_with(PREFIX))
@@ -32,11 +42,7 @@ fn build(prefix: &str, r2: bool) -> Result<Arc<dyn ObjectStore>, String> {
         .with_access_key_id(required(&format!("{prefix}ACCESS_KEY_ID"))?)
         .with_secret_access_key(required(&format!("{prefix}SECRET_ACCESS_KEY"))?)
         .with_virtual_hosted_style_request(!r2)
-        // Deliberate cutover budget bound, including reads: a transient failure
-        // is surfaced to the caller, not amplified by hidden transport retries.
-        // Existing application CAS retry limits remain unchanged. Increasing
-        // this requires accounting for the resulting operation/latency budget.
-        .with_retry(RetryConfig { max_retries: 0, ..Default::default() })
+        .with_retry(retry_policy())
         .build().map_err(|_| "invalid state storage configuration")?;
     Ok(Arc::new(store))
 }
@@ -62,4 +68,78 @@ pub async fn prepare() -> Result<(), String> {
         return Err("state migration source differs from approved buckets".into());
     }
     crate::state_migration::migrate(sessions.as_ref(), crypto.as_ref(), destination.as_ref()).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::{HeaderMap, StatusCode};
+    use object_store::{path::Path, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn transient_reads_retry_once_and_persistent_errors_stop() {
+        for recover in [true, false] {
+            let count = Arc::new(AtomicUsize::new(0));
+            let requests = Arc::clone(&count);
+            let router = axum::Router::new().route(
+                "/fixture/object",
+                axum::routing::get(move || {
+                    let attempt = requests.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        if recover && attempt > 0 {
+                            (StatusCode::OK, [("etag", "\"fixture\""), ("last-modified", "Wed, 21 Oct 2015 07:28:00 GMT")], "fixture")
+                        } else {
+                            (StatusCode::SERVICE_UNAVAILABLE, [("etag", "\"fixture\""), ("last-modified", "Wed, 21 Oct 2015 07:28:00 GMT")], "unavailable")
+                        }
+                    }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let backend = fixture_store(listener.local_addr().unwrap());
+            let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+            let result = backend.get(&Path::from("object")).await;
+            server.abort();
+            assert_eq!(result.is_ok(), recover);
+            assert_eq!(count.load(Ordering::SeqCst), 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn conditional_writes_preserve_conditions_and_do_not_retry_preconditions() {
+        for create in [true, false] {
+            for status in [StatusCode::PRECONDITION_FAILED, StatusCode::SERVICE_UNAVAILABLE] {
+                let count = Arc::new(AtomicUsize::new(0));
+                let requests = Arc::clone(&count);
+                let router = axum::Router::new().route(
+                    "/fixture/object",
+                    axum::routing::put(move |headers: HeaderMap| {
+                        requests.fetch_add(1, Ordering::SeqCst);
+                        assert_eq!(headers.get(if create { "if-none-match" } else { "if-match" }).unwrap(), if create { "*" } else { "\"fixture\"" });
+                        async move { (status, "synthetic") }
+                    }),
+                );
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let backend = fixture_store(listener.local_addr().unwrap());
+                let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+                let mode = if create { PutMode::Create } else { PutMode::Update(UpdateVersion { e_tag: Some("\"fixture\"".into()), version: None }) };
+                let result = backend.put_opts(&Path::from("object"), PutPayload::from_static(b"fixture"), PutOptions { mode, ..Default::default() }).await;
+                server.abort();
+                assert!(result.is_err());
+                assert_eq!(count.load(Ordering::SeqCst), if status == StatusCode::PRECONDITION_FAILED { 1 } else { 2 });
+            }
+        }
+    }
+
+    fn fixture_store(address: std::net::SocketAddr) -> impl ObjectStore {
+        AmazonS3Builder::new()
+            .with_bucket_name("fixture")
+            .with_region("us-east-1")
+            .with_endpoint(format!("http://{address}"))
+            .with_access_key_id("fixture-access")
+            .with_secret_access_key("fixture-secret")
+            .with_allow_http(true)
+            .with_retry(retry_policy())
+            .build().unwrap()
+    }
 }
