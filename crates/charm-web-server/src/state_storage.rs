@@ -32,6 +32,10 @@ fn build(prefix: &str, r2: bool) -> Result<Arc<dyn ObjectStore>, String> {
         .with_access_key_id(required(&format!("{prefix}ACCESS_KEY_ID"))?)
         .with_secret_access_key(required(&format!("{prefix}SECRET_ACCESS_KEY"))?)
         .with_virtual_hosted_style_request(!r2)
+        // Deliberate cutover budget bound, including reads: a transient failure
+        // is surfaced to the caller, not amplified by hidden transport retries.
+        // Existing application CAS retry limits remain unchanged. Increasing
+        // this requires accounting for the resulting operation/latency budget.
         .with_retry(RetryConfig { max_retries: 0, ..Default::default() })
         .build().map_err(|_| "invalid state storage configuration")?;
     Ok(Arc::new(store))

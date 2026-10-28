@@ -24,7 +24,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // must run before anything else in this function logs.
     let _sentry_guard = observability::init();
 
-    charm_web_server::state_storage::prepare().await?;
+    if let Err(error) = charm_web_server::state_storage::prepare().await {
+        // This boundary returns only fixed classifications/configuration names,
+        // never provider response bodies, object paths, ciphertext or credentials.
+        // Emit before returning so the existing Sentry guard flushes the event.
+        tracing::error!(reason = %error, "state authority preparation failed");
+        return Err(error.into());
+    }
 
     let crypto_backup = match charm_web_server::crypto_backup::CryptoBackupStore::from_env().await {
         Ok(backup) => backup.map(Arc::new),
