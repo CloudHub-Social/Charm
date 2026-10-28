@@ -1,9 +1,16 @@
 import { useEffect, useRef, useState } from "react";
+import { Mic } from "lucide-react";
 import type { VoiceMessageMetadata } from "@bindings/VoiceMessageMetadata";
 import { useVoiceRecorder } from "./useVoiceRecorder";
 
 interface VoiceRecorderProps {
   mobile: boolean;
+  /** Composer places this accessory inside its existing shell, never in a second panel. */
+  presentation?: "panel" | "composer";
+  /** External text/upload send ownership; never starts capture or sends while busy. */
+  disabled?: boolean;
+  /** Includes preview and send, so the integrator can retain but suspend the text editor. */
+  onBusyChange?: (busy: boolean) => void;
   onSend: (file: File, metadata: VoiceMessageMetadata) => Promise<boolean>;
   onClearFailedUpload: (file: File) => void;
   onCaptureChange?: (capturing: boolean) => void;
@@ -11,6 +18,9 @@ interface VoiceRecorderProps {
 
 export function VoiceRecorder({
   mobile,
+  presentation = "panel",
+  disabled = false,
+  onBusyChange,
   onSend,
   onClearFailedUpload,
   onCaptureChange,
@@ -21,6 +31,14 @@ export function VoiceRecorder({
   const sendingRef = useRef(false);
   const mounted = useRef(true);
   const previewAudio = useRef<HTMLAudioElement>(null);
+  const recordButton = useRef<HTMLButtonElement>(null);
+  const restoreIdleFocus = useRef(false);
+  useEffect(() => {
+    if (recorder.phase === "idle" && restoreIdleFocus.current) {
+      restoreIdleFocus.current = false;
+      recordButton.current?.focus();
+    }
+  }, [recorder.phase]);
   const pointer = useRef<{ id: number; x: number; cancelled: boolean } | null>(null);
   const suppressPointerClick = useRef(false);
   useEffect(() => {
@@ -30,6 +48,11 @@ export function VoiceRecorder({
     };
   }, []);
   const capturing = recorder.phase === "recording" || recorder.phase === "requesting";
+  const busy = recorder.phase !== "idle" || sending;
+  useEffect(() => {
+    onBusyChange?.(busy);
+    return () => onBusyChange?.(false);
+  }, [busy, onBusyChange]);
   useEffect(() => {
     onCaptureChange?.(capturing);
     return () => onCaptureChange?.(false);
@@ -46,19 +69,23 @@ export function VoiceRecorder({
   }, [recorder.preview]);
   const seconds = Math.floor(recorder.elapsedMs / 1000);
   const duration = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-  const buttonClass = "min-h-11 rounded-md px-3 text-sm hover:bg-accent disabled:opacity-50";
+  const buttonClass =
+    "min-h-11 min-w-11 rounded-md px-3 text-sm hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50";
 
   async function send() {
-    if (!recorder.preview || sendingRef.current) return;
+    if (!recorder.preview || sendingRef.current || disabled) return;
     sendingRef.current = true;
     setSending(true);
     setSendError(false);
-    onClearFailedUpload(recorder.preview.file);
     try {
+      previewAudio.current?.pause();
+      onClearFailedUpload(recorder.preview.file);
       const sent = await onSend(recorder.preview.file, recorder.preview.metadata);
       if (!mounted.current) return;
-      if (sent) recorder.discard();
-      else setSendError(true);
+      if (sent) {
+        restoreIdleFocus.current = true;
+        recorder.discard();
+      } else setSendError(true);
     } catch {
       if (mounted.current) setSendError(true);
     } finally {
@@ -78,15 +105,31 @@ export function VoiceRecorder({
       else recorder.discard();
     }
     pointer.current = null;
+    suppressPointerClick.current = true;
   }
 
   return (
-    <section aria-label="Voice message" className="mt-2 rounded-lg border border-border p-2">
+    <section
+      aria-label="Voice message"
+      aria-busy={sending}
+      className={
+        presentation === "composer" ? "min-w-0" : "mt-2 rounded-lg border border-border p-2"
+      }
+    >
       <div className="flex flex-wrap items-center gap-2">
         {recorder.phase !== "preview" && (
           <button
+            ref={recordButton}
             type="button"
             className={buttonClass}
+            disabled={disabled && !capturing}
+            title={
+              capturing
+                ? "Stop recording"
+                : mobile
+                  ? "Hold to record; slide left to discard"
+                  : "Record voice message"
+            }
             style={{ touchAction: "none" }}
             aria-label={capturing ? "Stop recording" : "Record voice message"}
             onClick={(event) => {
@@ -100,6 +143,7 @@ export function VoiceRecorder({
               else void recorder.start();
             }}
             onPointerDown={(event) => {
+              if (disabled || capturing) return;
               if (event.button !== 0 || !event.isPrimary || pointer.current) return;
               suppressPointerClick.current = false;
               if (!mobile || event.pointerType === "mouse") return;
@@ -127,13 +171,17 @@ export function VoiceRecorder({
               cancelInterruptedPointerCapture(event.pointerId);
             }}
           >
-            {recorder.phase === "requesting"
-              ? "Waiting for microphone…"
-              : capturing
-                ? "Stop recording"
-                : mobile
-                  ? "Hold to record"
-                  : "Record voice message"}
+            {presentation === "composer" && recorder.phase === "idle" ? (
+              <Mic aria-hidden="true" size={20} />
+            ) : recorder.phase === "requesting" ? (
+              "Waiting for microphone…"
+            ) : capturing ? (
+              "Stop recording"
+            ) : mobile ? (
+              "Hold to record"
+            ) : (
+              "Record voice message"
+            )}
           </button>
         )}
         {capturing && (
@@ -150,6 +198,7 @@ export function VoiceRecorder({
               controls
               preload="metadata"
               src={recorder.preview.url}
+              className="max-w-full min-w-0"
               aria-label="Voice message preview"
             >
               {/* As with received voice audio, no transcript is generated or uploaded. */}
@@ -159,10 +208,14 @@ export function VoiceRecorder({
             <button
               type="button"
               className={buttonClass}
-              disabled={sending}
+              disabled={sending || disabled}
               onClick={() => void send()}
             >
-              {sending ? "Sending voice message…" : "Send voice message"}
+              {sending
+                ? "Sending voice message…"
+                : sendError
+                  ? "Retry voice message"
+                  : "Send voice message"}
             </button>
           </>
         )}
@@ -173,6 +226,7 @@ export function VoiceRecorder({
             disabled={sending}
             onClick={() => {
               if (recorder.preview) onClearFailedUpload(recorder.preview.file);
+              restoreIdleFocus.current = true;
               recorder.discard();
               setSendError(false);
             }}

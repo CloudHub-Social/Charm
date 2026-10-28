@@ -148,7 +148,7 @@ export function useVoiceRecorder() {
   }
 
   async function start() {
-    if (active.current || phase === "requesting") return;
+    if (active.current || preparing.current || phase === "requesting") return;
     discard();
     const attempt = epoch.current;
     setPhase("requesting");

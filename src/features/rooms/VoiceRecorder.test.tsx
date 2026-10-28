@@ -196,4 +196,135 @@ describe("VoiceRecorder", () => {
     expect(capture.stop).toHaveBeenCalledOnce();
     expect(capture.start).not.toHaveBeenCalled();
   });
+  it.each([false, true])("offers one panel-free composer mic (compact=%s)", (mobile) => {
+    capture.phase = "idle";
+    capture.preview = null;
+    const view = render(
+      <VoiceRecorder
+        presentation="composer"
+        mobile={mobile}
+        onSend={vi.fn()}
+        onClearFailedUpload={vi.fn()}
+      />,
+    );
+    const button = screen.getByRole("button", { name: "Record voice message" });
+    expect(button).toHaveTextContent("");
+    expect(button).toHaveClass("min-h-11", "min-w-11");
+    expect(screen.getAllByRole("button")).toHaveLength(1);
+    expect(view.container.querySelector("section")).not.toHaveClass("border");
+    fireEvent.click(button, { detail: 0 });
+    expect(capture.start).toHaveBeenCalledOnce();
+  });
+
+  it("suspends voice send during an external send but keeps discard available", () => {
+    const onSend = vi.fn();
+    render(
+      <VoiceRecorder
+        presentation="composer"
+        mobile
+        disabled
+        onSend={onSend}
+        onClearFailedUpload={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Send voice message" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Send voice message" }));
+    fireEvent.click(screen.getByRole("button", { name: "Discard recording" }));
+    expect(capture.discard).toHaveBeenCalledOnce();
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("blocks touch capture while an external send owns the composer", () => {
+    capture.phase = "idle";
+    capture.preview = null;
+    render(
+      <VoiceRecorder
+        presentation="composer"
+        mobile
+        disabled
+        onSend={vi.fn()}
+        onClearFailedUpload={vi.fn()}
+      />,
+    );
+    const button = screen.getByRole("button", { name: "Record voice message" });
+    expect(button).toBeDisabled();
+    pointerEvent(button, "pointerdown");
+    expect(capture.start).not.toHaveBeenCalled();
+  });
+
+  it("reports preview ownership until unmount without clearing the text draft", () => {
+    const onBusyChange = vi.fn();
+    const onCaptureChange = vi.fn();
+    const view = render(
+      <VoiceRecorder
+        presentation="composer"
+        mobile={false}
+        onBusyChange={onBusyChange}
+        onCaptureChange={onCaptureChange}
+        onSend={vi.fn()}
+        onClearFailedUpload={vi.fn()}
+      />,
+    );
+    expect(onBusyChange).toHaveBeenLastCalledWith(true);
+    expect(onCaptureChange).toHaveBeenLastCalledWith(false);
+    view.unmount();
+    expect(onBusyChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it("retries the same preview and prevents duplicate pending sends", async () => {
+    let finish!: (sent: boolean) => void;
+    const onSend = vi
+      .fn()
+      .mockResolvedValueOnce(false)
+      .mockImplementationOnce(
+        () =>
+          new Promise<boolean>((resolve) => {
+            finish = resolve;
+          }),
+      );
+    const clearFailed = vi.fn();
+    render(
+      <VoiceRecorder
+        presentation="composer"
+        mobile={false}
+        onSend={onSend}
+        onClearFailedUpload={clearFailed}
+      />,
+    );
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "Send voice message" })),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Retry voice message" }));
+    fireEvent.click(screen.getByRole("button", { name: "Sending voice message…" }));
+    expect(screen.getByRole("button", { name: "Discard recording" })).toBeDisabled();
+    expect(onSend).toHaveBeenCalledTimes(2);
+    expect(onSend.mock.calls[1]).toEqual(onSend.mock.calls[0]);
+    expect(clearFailed).toHaveBeenCalledTimes(2);
+    await act(async () => finish(true));
+    expect(capture.discard).toHaveBeenCalledOnce();
+  });
+
+  it("cancels a permission request explicitly without sending", () => {
+    capture.phase = "requesting";
+    capture.preview = null;
+    render(
+      <VoiceRecorder
+        presentation="composer"
+        mobile
+        onSend={vi.fn()}
+        onClearFailedUpload={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Discard recording" }));
+    expect(capture.discard).toHaveBeenCalledOnce();
+  });
+  it("returns focus to the composer mic after discarding a preview", () => {
+    const props = { mobile: false, onSend: vi.fn(), onClearFailedUpload: vi.fn() };
+    const view = render(<VoiceRecorder presentation="composer" {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "Discard recording" }));
+    capture.phase = "idle";
+    capture.preview = null;
+    view.rerender(<VoiceRecorder presentation="composer" {...props} />);
+    expect(screen.getByRole("button", { name: "Record voice message" })).toHaveFocus();
+  });
 });

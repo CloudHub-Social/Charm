@@ -485,4 +485,29 @@ describe("useVoiceRecorder", () => {
     expect(stopTrack).toHaveBeenCalledOnce();
     expect(createObjectURL).not.toHaveBeenCalled();
   });
+  it("does not open two permission requests from the same idle render", async () => {
+    let grant!: (value: MediaStream) => void;
+    getUserMedia.mockImplementationOnce(
+      () =>
+        new Promise<MediaStream>((resolve) => {
+          grant = resolve;
+        }),
+    );
+    const { result } = renderHook(() => useVoiceRecorder());
+    const start = result.current.start;
+    let first!: Promise<void>;
+    act(() => {
+      first = start();
+      void start();
+    });
+    expect(getUserMedia).toHaveBeenCalledOnce();
+    act(() => result.current.discard());
+    await act(async () => {
+      grant(stream);
+      await first;
+    });
+    expect(stopTrack).toHaveBeenCalledOnce();
+    expect(FakeRecorder.instances).toHaveLength(0);
+    expect(result.current.phase).toBe("idle");
+  });
 });
