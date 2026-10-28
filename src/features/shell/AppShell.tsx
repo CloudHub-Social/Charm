@@ -4,7 +4,7 @@ import { useSettingsNavigation } from "@/features/settings/useSettingsNavigation
 import { useFlag } from "@/featureFlags";
 import { useAtomValue } from "jotai";
 import { verificationOverlayOpenAtom } from "@/features/verification/verificationAtoms";
-import { useAdaptiveLayoutState } from "./useAdaptiveLayout";
+import { useAdaptiveLayout } from "./useAdaptiveLayout";
 import { ChatVisibilityContext } from "./chatVisibility";
 import { MIN_ROOM_SIDEBAR_WIDTH, type PrimaryDestination } from "./navigationState";
 import { PaneResizeHandle } from "./PaneResizeHandle";
@@ -74,7 +74,12 @@ export function AppShell({
   onSelectActivity,
   onSelectSpaces,
 }: AppShellProps) {
-  const adaptive = useAdaptiveLayoutState();
+  const adaptiveState = useAdaptiveLayout({ adaptive: true });
+  // Accept legacy two-state adapters while the shell consumers migrate.
+  const adaptive =
+    typeof adaptiveState === "string"
+      ? { width: adaptiveState === "mobile" ? "compact" : "wide" }
+      : adaptiveState;
   const layout = adaptive.width === "compact" ? "mobile" : "desktop";
   const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
   const uxRefreshEnabled = useFlag("ux_refresh_v1");

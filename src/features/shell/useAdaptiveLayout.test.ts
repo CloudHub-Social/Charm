@@ -91,11 +91,11 @@ describe("adaptive width and input capabilities", () => {
     expect(media.listenerCount()).toBe(0);
   });
 
-  it("uses a conservative width and no inferred input without matchMedia", () => {
+  it("preserves desktop fallback and no inferred input without matchMedia", () => {
     vi.stubGlobal("matchMedia", undefined);
     const { result } = renderHook(() => useAdaptiveLayoutState());
     expect(result.current).toEqual({
-      width: "compact",
+      width: "wide",
       pointer: "none",
       hover: false,
       anyCoarsePointer: false,

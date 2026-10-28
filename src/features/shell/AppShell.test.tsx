@@ -18,7 +18,7 @@ const mockUseAdaptiveLayout = vi.fn();
 const mockUseFlag = vi.hoisted(() => vi.fn(() => true));
 const invokeDrag = vi.hoisted(() => vi.fn());
 vi.mock("./useAdaptiveLayout", () => ({
-  useAdaptiveLayoutState: () => ({
+  useAdaptiveLayout: () => ({
     width:
       mockUseAdaptiveLayout() === "mobile"
         ? "compact"

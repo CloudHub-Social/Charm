@@ -32,7 +32,14 @@ function readAdaptiveLayout(): AdaptiveLayout {
     typeof window.matchMedia === "function" &&
     window.matchMedia(query).matches;
   return {
-    width: matches(QUERIES.wide) ? "wide" : matches(QUERIES.medium) ? "medium" : "compact",
+    width:
+      typeof window === "undefined" || typeof window.matchMedia !== "function"
+        ? "wide"
+        : matches(QUERIES.wide)
+          ? "wide"
+          : matches(QUERIES.medium)
+            ? "medium"
+            : "compact",
     pointer: matches(QUERIES.coarse) ? "coarse" : matches(QUERIES.fine) ? "fine" : "none",
     hover: matches(QUERIES.hover),
     anyCoarsePointer: matches(QUERIES.anyCoarse),
@@ -56,22 +63,10 @@ export function useAdaptiveLayoutState(): AdaptiveLayout {
 }
 
 /** Retains the two-state interface for ChatShell, RoomsScreen and settings.
- * New shell decisions use useAdaptiveLayoutState instead. */
-export function useAdaptiveLayout(): LayoutMode {
-  const [mode, setMode] = useState<LayoutMode>(() =>
-    typeof window !== "undefined" &&
-    typeof window.matchMedia === "function" &&
-    window.matchMedia("(max-width: 767px)").matches
-      ? "mobile"
-      : "desktop",
-  );
-  useEffect(() => {
-    if (typeof window.matchMedia !== "function") return undefined;
-    const query = window.matchMedia("(max-width: 767px)");
-    const update = () => setMode(query.matches ? "mobile" : "desktop");
-    update();
-    query.addEventListener("change", update);
-    return () => query.removeEventListener("change", update);
-  }, []);
-  return mode;
+ * The opt-in state interface lets shell migration proceed independently. */
+export function useAdaptiveLayout(): LayoutMode;
+export function useAdaptiveLayout(options: { adaptive: true }): AdaptiveLayout;
+export function useAdaptiveLayout(options?: { adaptive: true }): LayoutMode | AdaptiveLayout {
+  const state = useAdaptiveLayoutState();
+  return options?.adaptive ? state : state.width === "compact" ? "mobile" : "desktop";
 }
