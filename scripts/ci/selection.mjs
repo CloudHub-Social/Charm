@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { changedInputs } from "./changed-inputs.mjs";
 import { appendFileSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -59,47 +59,44 @@ export function selectJobs(paths) {
   return result;
 }
 
+// Keep the existing native and web input surfaces; shared resolver changes
+// only the comparison trees. Unknown inputs remain conservative.
+const iosPattern =
+  /^(\.gitignore$|src-tauri\/|crates\/|Cargo\.(toml|lock)$|package\.json$|pnpm-lock\.yaml$|scripts\/(check-ios-frontend-css\.mjs|ios-build-diagnostics\.sh|check-ios-config\.mjs|configure-personal-ios\.mjs|configure-sideload-ios(\.test)?\.mjs|update-altstore-source\.mjs|personal-ios\.sh|generate-third-party-licenses\.mjs|xcode27-swiftrs-tools\/|license-texts\/)|\.github\/(templates\/altstore-source\.json|workflows\/(ios-release-evidence|quality-checks|nightly|release-builds)\.yml)$)/;
+const webPattern =
+  /^(src\/|public\/|\.design-sync\/|src-tauri\/src\/bindings\/|\.env$|\.env\.web$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig.*\.json$|vite\.config\.ts$|index\.html$|LICENSE$|NOTICE$|LICENSING\.md$|THIRD_PARTY_NOTICES\.md$|scripts\/(generate-third-party-licenses\.mjs$|license-texts\/)|\.github\/actions\/build-web-worker\/|\.github\/workflows\/web-preview\.yml$)/;
+const unknownInput = (path) => Object.values(selectJobs([path])).every(Boolean);
+export const selectIos = (paths) =>
+  paths === null || paths.some((path) => iosPattern.test(path) || unknownInput(path));
+export const selectWeb = (paths) =>
+  paths === null || paths.some((path) => webPattern.test(path) || unknownInput(path));
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  let paths = null;
-  const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
-  const kind = process.env.GITHUB_EVENT_NAME;
-  const base =
-    kind === "pull_request"
-      ? event.pull_request?.base?.sha
-      : kind === "merge_group"
-        ? event.merge_group?.base_sha
-        : kind === "push"
-          ? event.before
-          : null;
-  const head = process.env.GITHUB_SHA;
-  if (
-    base &&
-    /^[a-f0-9]{40}$/.test(base) &&
-    !/^0+$/.test(base) &&
-    /^[a-f0-9]{40}$/.test(head ?? "")
-  ) {
-    try {
-      execFileSync("git", ["fetch", "--no-tags", "--depth=1", "--quiet", "origin", base], {
-        stdio: "pipe",
-      });
-      const diff = execFileSync("git", ["diff", "--no-renames", "--name-only", "-z", base, head], {
-        encoding: "utf8",
-      });
-      paths = diff.split("\0").filter(Boolean);
-    } catch {
-      process.stdout.write(
-        "::notice::Unable to resolve changed inputs; selecting all qualification lanes\n",
-      );
-    }
+  let event = {};
+  try {
+    const parsed = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) event = parsed;
+  } catch {
+    // Missing/malformed event input must select every lane.
   }
-  const selected = selectJobs(paths);
+  const eventName = process.env.GITHUB_EVENT_NAME;
+  const revision = process.env.GITHUB_SHA;
+  const resolved = changedInputs({ eventName, event, revision });
+  const lane = process.argv[2];
+  const selected =
+    lane === "ios"
+      ? { ios: eventName !== "pull_request" || selectIos(resolved.paths) }
+      : lane === "web"
+        ? { web: eventName !== "pull_request" || selectWeb(resolved.paths) }
+        : selectJobs(resolved.paths);
   appendFileSync(
     process.env.GITHUB_OUTPUT,
     Object.entries(selected)
       .map(([key, value]) => `${key}=${value}\n`)
       .join(""),
   );
+  const { paths: _paths, ...receipt } = resolved;
   process.stdout.write(
-    `${JSON.stringify({ revision: head, base, selected, fallback: paths === null })}\n`,
+    `${JSON.stringify({ revision, eventBase: event.pull_request?.base?.sha, ...receipt, selected })}\n`,
   );
 }

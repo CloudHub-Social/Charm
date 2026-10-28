@@ -26,31 +26,8 @@ jobs:
           fetch-depth: 1
 
       - id: paths
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          # A merge-queue or manually dispatched build is explicit release
-          # evidence. Pushes to main prove the merged tree. PRs diff just the
-          # base and head trees; on retrieval failure we run rather than skip.
-          if [ "$EVENT_NAME" != pull_request ]; then
-            echo 'ios=true' >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if ! git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"; then
-            echo '::warning::could not fetch the PR base; running iOS proof'
-            echo 'ios=true' >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          changed=$(git diff --no-renames --name-only "$PR_BASE_SHA" "$HEAD_SHA")
-          ios_pattern='^(\.gitignore$|src-tauri/|crates/|Cargo\.(toml|lock)$|package\.json$|pnpm-lock\.yaml$|scripts/(check-ios-frontend-css\.mjs|ios-build-diagnostics\.sh|check-ios-config\.mjs|configure-personal-ios\.mjs|configure-sideload-ios(\.test)?\.mjs|update-altstore-source\.mjs|personal-ios\.sh|generate-third-party-licenses\.mjs|xcode27-swiftrs-tools/|license-texts/)|\.github/(templates/altstore-source\.json|workflows/(ios-release-evidence|quality-checks|nightly|release-builds)\.yml)$)'
-          if grep -Eq "$ios_pattern" <<< "$changed"; then
-            echo 'ios=true' >> "$GITHUB_OUTPUT"
-          else
-            echo 'ios=false' >> "$GITHUB_OUTPUT"
-          fi
+        name: Select iOS qualification from validated merge inputs
+        run: node scripts/ci/selection.mjs ios
 
   ios-release:
     name: iOS release build and smoke test
