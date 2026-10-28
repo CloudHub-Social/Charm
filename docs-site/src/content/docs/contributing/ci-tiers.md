@@ -67,8 +67,14 @@ main ruleset.
 
 `scripts/ci/selection.mjs` retains native/workspace and Synapse input coverage,
 adds binding/feature-gallery witnesses, and selects all qualification for
-unknown paths, unresolved diffs and shared dependencies/workflows. Rename diffs
-include both source and destination. Tooling-only lint/format/Knip changes run
+unknown paths, unresolved diffs and shared dependencies/workflows. PR selection validates that checkout is the expected synthetic merge, reads its
+exactly two parents from the raw commit object, and requires the second parent
+to match the event PR head. It compares the actual first parent to the merge;
+the event base may be stale after main advances. Quality, iOS and preview share
+this resolver. Fetch, checkout, parent or diff failures select all applicable
+qualification instead of substituting the event base. Push and merge-group
+comparison bases are unchanged; iOS still runs on every main push, merge-group
+and manual dispatch. Rename diffs include both source and destination. Tooling-only lint/format/Knip changes run
 the frontend gate without unnecessary browser execution. Audits, licensing,
 observability and release safeguards remain unconditional. The stable Rust
 aggregate requires every selected job to succeed; a skipped or missing selected

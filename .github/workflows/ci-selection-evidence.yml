@@ -1,0 +1,35 @@
+name: CI selection evidence
+
+on:
+  pull_request:
+    paths:
+      - scripts/ci/**
+      - .github/workflows/ci-selection-evidence.yml
+      - .github/workflows/ios-release-evidence.yml
+      - .github/workflows/web-preview.yml
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ci-selection-evidence-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    name: Validate merge selection and stale-base witness
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.22.2
+      - run: node --test scripts/ci/*.test.mjs
+      - name: Replay exact historical stale-base merge and provider timings
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/replay-stale-base.mjs
