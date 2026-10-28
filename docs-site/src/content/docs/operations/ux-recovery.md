@@ -249,9 +249,9 @@ failure with description **Codex posted 1 finding(s) on current head**, updated
 review receipt. The current-head marker 6458617870 was followed by explicit
 code/security payer-quota failures 6458617941 and 6458619961; no clean completion
 has been observed. Thread resolution alone does not establish an independent
-Codex review. The repository/payer administrator owns restoring that capability;
-then the exact current head needs a fresh clean receipt. No purchase, settings
-change, gate bypass or repeated blind review request is performed here.
+Codex review. At that checkpoint, quota restoration and a fresh receipt were outstanding.
+The direct owner decision below supersedes that requirement: record Codex review
+as owner-waived, not passed. No purchase or review-settings change is needed.
 
 The current [preview run 40618269454](https://github.com/CloudHub-Social/Charm/actions/runs/40618269454),
 job 122585838343, failed **Verify deployed API proxy** with HTTP 503 at
@@ -350,10 +350,42 @@ owner's behalf.
 The integrator accepts these later bounded serial tasks, subject to the releases
 above. Shared RoomsScreen and Spec52 writes have **not** started; no task was
 redispatched and no P5 targeted queue was repeated. Child components, PR591,
-PR566 and backend code remain with their owners. Independent Codex review/quota
-is not bypassed under this continuation; tests, security, accessibility,
-screenshot and device requirements stay in force. A separate task's reported
-policy does not by itself revise this owner's current no-bypass boundary.
+PR566 and backend code remain with their owners. That coordination checkpoint preserved its then-current review boundary. The
+new direct owner decision below now waives Codex approval/receipt/quota; tests,
+security, accessibility, screenshot and device requirements stay in force.
+
+## Owner decision — Codex review waiver, 2026-10-28 08:24 Toronto
+
+Dispatch `charm-codex-review-admin-waiver-20261028-v1` is a new direct owner
+instruction, not a repeated task. The owner states: **All codex reviews can be
+bypassed by admin merge.** Record Codex approval, clean receipt and payer quota
+as **owner-waived**, never as a successful review. Earlier quota-restoration
+next actions in this ledger and handoff are superseded. Do not request credits,
+wait for quota restoration or impose another mandatory reviewer gate.
+
+Admin merge is authorized only for an otherwise-ready exact head coordinated by
+the designated integration owner. Preserve a head-SHA guard and merge readback
+when supported. This does not authorize merging over failed tests, security,
+accessibility, preview or required snapshot approval, ignoring substantive
+findings, changing branch protection/settings/signing/access/spending, or
+changing SableClient. No merge is performed by this ledger update.
+
+PR #601 was freshly read at `5f41925e50aa7c848745c055091dccfb89903632`, open and
+not draft. Its mergeability flag is not readiness evidence. Non-Codex gates are
+routed as follows:
+
+| Requirement | Fresh provider evidence | Responsible next actor and action |
+| --- | --- | --- |
+| Preview API | [Run 40687041345](https://github.com/CloudHub-Social/Charm/actions/runs/40687041345), job 122812045667, API-proxy verification returned HTTP 503 at 12:22:05Z for the current ledger head | Existing companion/R2 owner under #606 reconciles the service in that stream; integrator then requires passing current-head preview/API verification. No backend edits, deployment or blind rerun here |
+| Required snapshot approval | Last published set for prior head `dfd9e8ad` is [120469](https://cloudhubsocial.sentry.io/preprod/snapshots/120469?selectedTypes=added,changed), **ACTION_REQUIRED**. No external Snapshot Testing result for `5f41925e` was published at this read; absence is not approval | Authorized snapshot reviewer reviews the exact candidate set through the existing process; require the set for the eventual current head. Read/Actions portal discovery exposes no Sentry capability in this session, so no platform approval is claimed |
+| Refreshed exact-head CI | At this read, [Quality 40687041427](https://github.com/CloudHub-Social/Charm/actions/runs/40687041427), [iOS 40687041791](https://github.com/CloudHub-Social/Charm/actions/runs/40687041791) and [CodeQL 40687041202](https://github.com/CloudHub-Social/Charm/actions/runs/40687041202) were running; docs 40687041547 passed | Integrator reads actual terminal results for the exact eventual head; prior green heads are not substituted |
+| Integration custody | [Dependency note 6466141626](https://github.com/CloudHub-Social/Charm/pull/601#issuecomment-6466141626) still explicitly says no ownership transfer | Its quota clause is superseded; its serial file-release/dependency plan remains in force. Preserve #591 navigation, #566 composer commands and #606 backend owners; no cross-branch wiring before release |
+| Physical acceptance | Phone/iPad keyboard, long-press, screen-reader, rotation and multitasking evidence remains unavailable | Owner/device tester records genuine current-build outcomes; hosted build/simulator and source merge readiness remain separate from useful live/device acceptance |
+
+Routing is recorded in this existing ledger and the same EA handoff for the
+coordinator. No message redispatch or new worker was created. The seven serial
+integration tasks above remain proposals gated by exact file release; the waiver
+changes review policy only and does not transfer implementation ownership.
 
 ## Acceptance and remaining work
 
