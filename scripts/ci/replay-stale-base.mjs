@@ -82,7 +82,7 @@ try {
     measurement:
       "same-tree selector replay; historical job durations, not a new runtime speedup benchmark or billing savings",
   };
-  console.log(JSON.stringify(receipt, null, 2));
+  process.stdout.write(`${JSON.stringify(receipt, null, 2)}\n`);
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

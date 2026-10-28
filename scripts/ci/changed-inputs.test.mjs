@@ -8,6 +8,7 @@ import test from "node:test";
 import { changedInputs } from "./changed-inputs.mjs";
 import { selectJobs, selectIos, selectWeb } from "./selection.mjs";
 
+const git = (cwd, args) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" });
 const revision = "1".repeat(40);
 const actualBase = "2".repeat(40);
 const prHead = "3".repeat(40);
@@ -131,7 +132,6 @@ test("real shallow Git checkout exposes both raw parents and preserves rename/de
     const origin = join(dir, "origin");
     const checkout = join(dir, "checkout");
     mkdirSync(origin);
-    const git = (cwd, args) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" });
     git(origin, ["init", "-b", "main"]);
     git(origin, ["config", "user.name", "CI fixture"]);
     git(origin, ["config", "user.email", "ci@example.invalid"]);
@@ -214,15 +214,6 @@ test("real shallow Git checkout exposes both raw parents and preserves rename/de
       .filter(Boolean);
     assert.ok(oldPaths.includes("crates/backend.rs"));
     assert.equal(selectJobs(oldPaths).platform, true);
-    console.log(
-      JSON.stringify({
-        witness: "stale-base",
-        before: selectJobs(oldPaths),
-        after: selectJobs(result.paths),
-        iosBefore: selectIos(oldPaths),
-        iosAfter: selectIos(result.paths),
-      }),
-    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

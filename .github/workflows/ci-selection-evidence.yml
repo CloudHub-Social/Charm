@@ -8,12 +8,18 @@ on:
       - .github/workflows/ios-release-evidence.yml
       - .github/workflows/web-preview.yml
 
+  workflow_dispatch:
+    inputs:
+      historical_replay:
+        description: Replay retained Quality40699404196 evidence (requires historical objects and run metadata)
+        type: boolean
+        default: false
+
 permissions:
   contents: read
-  actions: read
 
 concurrency:
-  group: ci-selection-evidence-${{ github.event.pull_request.number }}
+  group: ci-selection-evidence-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -29,6 +35,18 @@ jobs:
         with:
           node-version: 22.22.2
       - run: node --test scripts/ci/*.test.mjs
+
+  historical-replay:
+    if: github.event_name == 'workflow_dispatch' && inputs.historical_replay
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Replay exact historical stale-base merge and provider timings
         env:
           GH_TOKEN: ${{ github.token }}

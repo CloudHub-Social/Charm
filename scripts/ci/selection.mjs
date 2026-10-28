@@ -95,7 +95,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       .map(([key, value]) => `${key}=${value}\n`)
       .join(""),
   );
-  const { paths, ...receipt } = resolved;
+  const { paths: _paths, ...receipt } = resolved;
   process.stdout.write(
     `${JSON.stringify({ revision, eventBase: event.pull_request?.base?.sha, ...receipt, selected })}\n`,
   );
