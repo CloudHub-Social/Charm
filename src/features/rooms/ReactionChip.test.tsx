@@ -117,4 +117,41 @@ describe("ReactionChip", () => {
     expect(details).not.toHaveBeenCalled();
     expect(screen.getByRole("button")).not.toHaveAttribute("aria-describedby");
   });
+
+  it("allows small finger drift while cancelling a deliberate drag", () => {
+    vi.useFakeTimers();
+    const toggle = vi.fn();
+    render(<ReactionChip reaction={reaction} onToggle={toggle} />);
+    const chip = screen.getByRole("button");
+    fireEvent.touchStart(chip, touch);
+    fireEvent.touchMove(chip, { touches: [{ identifier: 1, clientX: 23, clientY: 24 }] });
+    fireEvent.touchEnd(chip);
+    fireEvent.click(chip);
+    expect(toggle).toHaveBeenCalledOnce();
+
+    fireEvent.touchStart(chip, touch);
+    fireEvent.touchMove(chip, { touches: [{ identifier: 1, clientX: 40, clientY: 20 }] });
+    fireEvent.touchEnd(chip);
+    fireEvent.click(chip);
+    expect(toggle).toHaveBeenCalledOnce();
+  });
+
+  it("keeps pointer and hold details accessible while mutations are disabled", () => {
+    vi.useFakeTimers();
+    const toggle = vi.fn();
+    const details = vi.fn();
+    render(<ReactionChip reaction={reaction} onToggle={toggle} onViewDetails={details} disabled />);
+    const chip = screen.getByRole("button", { name: "View 3 reactors for 👍" });
+    expect(chip).toBeEnabled();
+    fireEvent.click(chip);
+    expect(details).toHaveBeenCalledOnce();
+    fireEvent.contextMenu(chip);
+    expect(details).toHaveBeenCalledTimes(2);
+    fireEvent.touchStart(chip, touch);
+    act(() => vi.advanceTimersByTime(600));
+    fireEvent.touchEnd(chip);
+    fireEvent.click(chip);
+    expect(details).toHaveBeenCalledTimes(3);
+    expect(toggle).not.toHaveBeenCalled();
+  });
 });

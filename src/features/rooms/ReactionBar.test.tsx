@@ -596,4 +596,25 @@ describe("ReactionBar", () => {
     expect(screen.queryByRole("button", { name: /View all/ })).not.toBeInTheDocument();
     expect(getReactionDetails).not.toHaveBeenCalled();
   });
+
+  it("restores focus after the last read-only reaction disappears", async () => {
+    const props = {
+      onToggle: vi.fn(),
+      disabled: true,
+      roomId: "!room:example.org",
+      eventId: "$event",
+    };
+    const { rerender } = render(
+      <ReactionBar {...props} reactions={[{ key: "👍", count: 1, reacted_by_me: false }]} />,
+    );
+    const chip = screen.getByRole("button", { name: "View 1 reactors for 👍" });
+    fireEvent.click(chip);
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    rerender(<ReactionBar {...props} reactions={[]} />);
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByRole("group", { name: "Reactions no longer available" })).toHaveFocus(),
+    );
+    expect(props.onToggle).not.toHaveBeenCalled();
+  });
 });

@@ -28,7 +28,7 @@ const EMOJI = [
 ];
 
 for (const layout of ["bubble", "discord", "irc"]) {
-  for (const width of [320, 375, 430]) {
+  for (const width of [320, 375, 430, 1280]) {
     for (const count of [1, 5, 20]) {
       test(`${layout} ${width}px wraps ${count} reaction targets and separates details from toggles`, async ({
         page,
@@ -87,6 +87,8 @@ for (const layout of ["bubble", "discord", "irc"]) {
         await expect(bar).toBeVisible();
         const chips = bar.locator("button[aria-pressed]");
         await expect(chips).toHaveCount(count);
+        // Capture after responsive layout settles, before measuring all targets.
+        await captureSnapshot(page, `reactions-${layout}-${width}-${count}`);
         const targets = await bar
           .locator('button[aria-pressed], button[aria-label="Add reaction"]')
           .evaluateAll((buttons) =>
@@ -124,8 +126,6 @@ for (const layout of ["bubble", "discord", "irc"]) {
         }
         if (count === 20)
           expect(new Set(targets.map((target) => target.y)).size).toBeGreaterThan(1);
-        await captureSnapshot(page, `reactions-${layout}-${width}-${count}`);
-
         const chip = chips.first();
         await chip.focus();
         await chip.press("Shift+F10");

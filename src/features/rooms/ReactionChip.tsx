@@ -16,6 +16,7 @@ export const ReactionChip = forwardRef<HTMLButtonElement, ReactionChipProps>(fun
   const hintId = useId();
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const suppressClickRef = useRef(false);
+  const touchOriginRef = useRef<{ identifier: number; x: number; y: number } | null>(null);
   function cancelHold() {
     if (timerRef.current !== null) clearTimeout(timerRef.current);
     timerRef.current = null;
@@ -28,7 +29,12 @@ export const ReactionChip = forwardRef<HTMLButtonElement, ReactionChipProps>(fun
         {...props}
         ref={ref}
         type="button"
-        disabled={disabled}
+        disabled={disabled && !onViewDetails}
+        aria-label={
+          disabled && onViewDetails
+            ? `View ${reaction.count} reactors for ${reaction.key}`
+            : undefined
+        }
         aria-pressed={reaction.reacted_by_me}
         aria-describedby={
           [props["aria-describedby"], onViewDetails ? hintId : undefined]
@@ -43,10 +49,11 @@ export const ReactionChip = forwardRef<HTMLButtonElement, ReactionChipProps>(fun
             event.preventDefault();
             return;
           }
-          onToggle();
+          if (disabled) onViewDetails?.(event.currentTarget);
+          else onToggle();
         }}
         onContextMenu={(event) => {
-          if (!onViewDetails || disabled) return;
+          if (!onViewDetails) return;
           event.preventDefault();
           event.stopPropagation();
           cancelHold();
@@ -75,7 +82,14 @@ export const ReactionChip = forwardRef<HTMLButtonElement, ReactionChipProps>(fun
           event.stopPropagation();
           cancelHold();
           suppressClickRef.current = false;
-          if (!onViewDetails || disabled || event.touches.length !== 1) return;
+          if (event.touches.length !== 1) return;
+          const touch = event.touches[0];
+          touchOriginRef.current = {
+            identifier: touch.identifier,
+            x: touch.clientX,
+            y: touch.clientY,
+          };
+          if (!onViewDetails) return;
           const trigger = event.currentTarget;
           timerRef.current = setTimeout(() => {
             timerRef.current = null;
@@ -86,10 +100,21 @@ export const ReactionChip = forwardRef<HTMLButtonElement, ReactionChipProps>(fun
         onTouchEnd={(event) => {
           event.stopPropagation();
           cancelHold();
+          touchOriginRef.current = null;
           if (suppressClickRef.current) event.preventDefault();
         }}
         onTouchMove={(event) => {
           event.stopPropagation();
+          const origin = touchOriginRef.current;
+          const touch = Array.from(event.touches).find(
+            (candidate) => candidate.identifier === origin?.identifier,
+          );
+          if (
+            origin &&
+            touch &&
+            Math.hypot(touch.clientX - origin.x, touch.clientY - origin.y) <= 10
+          )
+            return;
           cancelHold();
           suppressClickRef.current = true;
         }}
@@ -99,6 +124,7 @@ export const ReactionChip = forwardRef<HTMLButtonElement, ReactionChipProps>(fun
           suppressClickRef.current = true;
         }}
         className={cn(
+          disabled && onViewDetails && "opacity-70",
           "flex min-h-11 min-w-11 max-w-full items-center justify-center gap-1 rounded-full border px-2 text-xs disabled:pointer-events-none disabled:opacity-40",
           reaction.reacted_by_me
             ? "border-primary bg-primary/10 text-primary"
@@ -110,6 +136,7 @@ export const ReactionChip = forwardRef<HTMLButtonElement, ReactionChipProps>(fun
       </button>
       {onViewDetails && (
         <span id={hintId} className="sr-only">
+          {disabled ? "Read-only reaction. Activate to view reactors. " : ""}
           Hold or press Shift+F10 for reactor details. Tab to View reactors for read-only access.
         </span>
       )}

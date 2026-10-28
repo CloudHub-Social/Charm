@@ -67,7 +67,7 @@ function ScopedReactionBar({
   // mutation on a real event can still expose its read-only reactor list.
   const canViewDetails = messageActionParityEnabled && !!roomId && !!eventId?.startsWith("$");
   const returnFocusRef = useRef<HTMLElement | null>(null);
-  const addReactionRef = useRef<HTMLButtonElement | null>(null);
+  const groupRef = useRef<HTMLFieldSetElement | null>(null);
   const [detailsByKey, setDetailsByKey] = useState<Record<string, ReactionDetail[]>>({});
   const [detailErrorsByKey, setDetailErrorsByKey] = useState<Record<string, boolean>>({});
   const [modalKey, setModalKeyState] = useState<string | null>(null);
@@ -201,7 +201,7 @@ function ScopedReactionBar({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modalKey, modalReaction, tooltipKey, tooltipReaction]);
 
-  if (reactions.length === 0) {
+  if (reactions.length === 0 && returnFocusRef.current === null) {
     return null;
   }
 
@@ -289,25 +289,32 @@ function ScopedReactionBar({
   return (
     <TooltipProvider>
       <fieldset
-        className="mt-0.5 flex min-w-0 max-w-full flex-wrap items-center gap-1"
-        aria-label="Reactions"
+        ref={groupRef}
+        tabIndex={-1}
+        className={
+          reactions.length === 0
+            ? "sr-only"
+            : "mt-0.5 flex min-w-0 max-w-full flex-wrap items-center gap-1"
+        }
+        aria-label={reactions.length === 0 ? "Reactions no longer available" : "Reactions"}
         onTouchStart={(event) => event.stopPropagation()}
         onTouchEnd={(event) => event.stopPropagation()}
         onTouchMove={(event) => event.stopPropagation()}
         onTouchCancel={(event) => event.stopPropagation()}
       >
         {chips}
-        <EmojiPicker accountId={accountId} onSelect={onToggle}>
-          <button
-            type="button"
-            ref={addReactionRef}
-            aria-label="Add reaction"
-            disabled={disabled}
-            className="flex size-11 shrink-0 items-center justify-center rounded-full border border-border text-muted-foreground hover:bg-secondary disabled:pointer-events-none disabled:opacity-40"
-          >
-            <Plus size={12} />
-          </button>
-        </EmojiPicker>
+        {reactions.length > 0 && (
+          <EmojiPicker accountId={accountId} onSelect={onToggle}>
+            <button
+              type="button"
+              aria-label="Add reaction"
+              disabled={disabled}
+              className="flex size-11 shrink-0 items-center justify-center rounded-full border border-border text-muted-foreground hover:bg-secondary disabled:pointer-events-none disabled:opacity-40"
+            >
+              <Plus size={12} />
+            </button>
+          </EmojiPicker>
+        )}
       </fieldset>
       <WhoReactedDialog
         open={modalKey !== null}
@@ -325,7 +332,11 @@ function ScopedReactionBar({
           event.preventDefault();
           const trigger = returnFocusRef.current;
           if (trigger?.isConnected && !trigger.matches(":disabled")) trigger.focus();
-          else addReactionRef.current?.focus();
+          else {
+            const fallback =
+              groupRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)");
+            (fallback ?? groupRef.current)?.focus();
+          }
         }}
       />
     </TooltipProvider>
