@@ -51,6 +51,19 @@ describe("MessageActions", () => {
     mockUseFlag.mockReturnValue(true);
   });
 
+  it("does not select an action on the opening Control-click release", async () => {
+    const { onReply } = renderActions();
+    openMenu();
+    const reply = await screen.findByRole("menuitem", { name: "Reply", exact: true });
+    expect(fireEvent.pointerUp(reply, { button: 0, ctrlKey: true, pointerType: "mouse" })).toBe(
+      false,
+    );
+    expect(onReply).not.toHaveBeenCalled();
+    expect(screen.getByRole("menu")).toBeVisible();
+    fireEvent.click(reply);
+    expect(onReply).toHaveBeenCalledOnce();
+  });
+
   it("shows Reply and Copy for a message that isn't own and can't be redacted", async () => {
     renderActions({ isOwn: false, canRedact: false });
     openMenu();

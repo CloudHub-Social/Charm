@@ -398,6 +398,31 @@ test("opening right-click release cannot select a menu action", async ({ page })
   await captureSnapshot(page, "message-actions-context-release");
 });
 
+test("opening Control-click release cannot select a menu action", async ({ page }) => {
+  const composer = page.getByPlaceholder(`Message ${ROOM.name}`);
+  await composer.fill("Control click must only open actions");
+  await composer.press("Enter");
+  await expect(page.getByText(/sending…/)).toHaveCount(0);
+  const body = page.getByText("Control click must only open actions", { exact: true });
+  await body.hover();
+  await page.keyboard.down("Control");
+  await page.mouse.down({ button: "left" });
+  // Linux has no native macOS Control-click context request. Keep real pointer
+  // down/up, injecting only that platform-specific context event between them.
+  await body.dispatchEvent("contextmenu", { button: 0, ctrlKey: true });
+  const reply = page.getByRole("menuitem", { name: "Reply", exact: true });
+  await expect(reply).toBeVisible();
+  const bounds = await reply.boundingBox();
+  expect(bounds).not.toBeNull();
+  await page.mouse.move(bounds!.x + bounds!.width / 2, bounds!.y + bounds!.height / 2);
+  await page.mouse.up({ button: "left" });
+  await page.keyboard.up("Control");
+  await expect(page.getByRole("menu")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Cancel reply" })).toHaveCount(0);
+  await reply.click();
+  await expect(page.getByRole("button", { name: "Cancel reply" })).toBeVisible();
+});
+
 test("secondary word selection does not suppress the message menu", async ({ page }) => {
   const composer = page.getByPlaceholder(`Message ${ROOM.name}`);
   await composer.fill("Secondary click opens actions");
