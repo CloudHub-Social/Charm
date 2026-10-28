@@ -148,6 +148,7 @@ export const KeyboardDiscard: Story = {
     await userEvent.keyboard("{Enter}");
     await expect(canvas.getByRole("button", { name: "Record voice message" })).toBeEnabled();
     await expect(canvas.getByRole("textbox")).not.toHaveAttribute("readonly");
+    await expect(canvas.getByRole("button", { name: "Record voice message" })).toHaveFocus();
   },
 };
 export const TouchPreview: Story = {
@@ -183,5 +184,6 @@ export const PermissionCancellation: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Discard recording" }));
     await expect(canvas.getByRole("button", { name: "Record voice message" })).toBeEnabled();
     await expect(canvas.getByRole("textbox")).not.toHaveAttribute("readonly");
+    await expect(canvas.getByRole("button", { name: "Record voice message" })).toHaveFocus();
   },
 };

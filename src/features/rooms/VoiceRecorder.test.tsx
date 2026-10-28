@@ -318,4 +318,13 @@ describe("VoiceRecorder", () => {
     fireEvent.click(screen.getByRole("button", { name: "Discard recording" }));
     expect(capture.discard).toHaveBeenCalledOnce();
   });
+  it("returns focus to the composer mic after discarding a preview", () => {
+    const props = { mobile: false, onSend: vi.fn(), onClearFailedUpload: vi.fn() };
+    const view = render(<VoiceRecorder presentation="composer" {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "Discard recording" }));
+    capture.phase = "idle";
+    capture.preview = null;
+    view.rerender(<VoiceRecorder presentation="composer" {...props} />);
+    expect(screen.getByRole("button", { name: "Record voice message" })).toHaveFocus();
+  });
 });

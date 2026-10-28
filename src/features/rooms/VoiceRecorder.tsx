@@ -31,6 +31,14 @@ export function VoiceRecorder({
   const sendingRef = useRef(false);
   const mounted = useRef(true);
   const previewAudio = useRef<HTMLAudioElement>(null);
+  const recordButton = useRef<HTMLButtonElement>(null);
+  const restoreIdleFocus = useRef(false);
+  useEffect(() => {
+    if (recorder.phase === "idle" && restoreIdleFocus.current) {
+      restoreIdleFocus.current = false;
+      recordButton.current?.focus();
+    }
+  }, [recorder.phase]);
   const pointer = useRef<{ id: number; x: number; cancelled: boolean } | null>(null);
   const suppressPointerClick = useRef(false);
   useEffect(() => {
@@ -74,8 +82,10 @@ export function VoiceRecorder({
       onClearFailedUpload(recorder.preview.file);
       const sent = await onSend(recorder.preview.file, recorder.preview.metadata);
       if (!mounted.current) return;
-      if (sent) recorder.discard();
-      else setSendError(true);
+      if (sent) {
+        restoreIdleFocus.current = true;
+        recorder.discard();
+      } else setSendError(true);
     } catch {
       if (mounted.current) setSendError(true);
     } finally {
@@ -109,6 +119,7 @@ export function VoiceRecorder({
       <div className="flex flex-wrap items-center gap-2">
         {recorder.phase !== "preview" && (
           <button
+            ref={recordButton}
             type="button"
             className={buttonClass}
             disabled={disabled && !capturing}
@@ -215,6 +226,7 @@ export function VoiceRecorder({
             disabled={sending}
             onClick={() => {
               if (recorder.preview) onClearFailedUpload(recorder.preview.file);
+              restoreIdleFocus.current = true;
               recorder.discard();
               setSendError(false);
             }}
