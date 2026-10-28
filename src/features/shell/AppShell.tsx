@@ -84,8 +84,9 @@ export function AppShell({
   const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
   const uxRefreshEnabled = useFlag("ux_refresh_v1");
   const mobileChatLayoutEnabled = mobileChatRedesignEnabled || uxRefreshEnabled;
+  const contextPanelOpen = rightPanel !== null;
   const replacingChatWithContext =
-    uxRefreshEnabled && adaptive.width === "medium" && rightPanel !== null;
+    uxRefreshEnabled && adaptive.width === "medium" && contextPanelOpen;
   const verificationOverlayOpen = useAtomValue(verificationOverlayOpenAtom);
   const { openSettings } = useSettingsNavigation();
   const { preferences, setRoomSidebarWidth } = usePanePreferences();
@@ -107,7 +108,9 @@ export function AppShell({
     !replacingChatWithContext &&
     (layout === "desktop" || (mobileView === "detail" && !!activeRoomId && rightPanel === null));
   const contextVisible =
-    replacingChatWithContext &&
+    uxRefreshEnabled &&
+    layout === "desktop" &&
+    contextPanelOpen &&
     !showingActivity &&
     !isSettingsActive &&
     !chatObscured &&
@@ -179,17 +182,26 @@ export function AppShell({
       ) {
         contextReturnFocus.current = document.activeElement;
       }
-      contextRef.current?.focus();
+      // A medium replacement needs focus in context, but a width change
+      // must not displace a user already interacting with the open panel.
+      if (replacingChatWithContext && !contextRef.current?.contains(document.activeElement)) {
+        contextRef.current?.focus();
+      }
     } else {
       const target = contextReturnFocus.current;
       // Hidden navigation cancels this return; never restore it during a
       // later, unrelated visit to chat.
       contextReturnFocus.current = null;
-      if (target?.isConnected && chatVisible) {
+      if (
+        !contextPanelOpen &&
+        target?.isConnected &&
+        chatVisible &&
+        document.activeElement === document.body
+      ) {
         target.focus();
       }
     }
-  }, [contextVisible, chatVisible]);
+  }, [contextVisible, replacingChatWithContext, chatVisible, contextPanelOpen]);
 
   useEffect(() => {
     if (chatVisible) return;

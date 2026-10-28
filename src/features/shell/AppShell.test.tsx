@@ -575,3 +575,42 @@ it.each(["settings", "activity"])(
     expect(draft).not.toHaveFocus();
   },
 );
+
+it("preserves panel controls through medium-wide resize and returns focus only on close", () => {
+  mockUseFlag.mockReturnValue(true);
+  mockUseAdaptiveLayout.mockReturnValue("medium");
+  const props = {
+    activeRoomId: "!synthetic:example.org",
+    selectionRequestId: 0,
+    mobileView: "detail" as const,
+    onMobileViewChange: vi.fn(),
+    spaceRail: <button>Other navigation</button>,
+    roomList: null,
+    content: <button>Open context</button>,
+    rightPanel: null,
+  };
+  const view = render(<AppShell {...props} />);
+  const trigger = screen.getByRole("button", { name: "Open context" });
+  trigger.focus();
+  const panel = (
+    <div>
+      <button>Close panel</button>
+      <input aria-label="Context search" />
+    </div>
+  );
+  view.rerender(<AppShell {...props} rightPanel={panel} />);
+  const close = screen.getByRole("button", { name: "Close panel" });
+  const search = screen.getByRole("textbox", { name: "Context search" });
+  close.focus();
+  mockUseAdaptiveLayout.mockReturnValue("desktop");
+  view.rerender(<AppShell {...props} rightPanel={panel} />);
+  expect(close).toHaveFocus();
+  search.focus();
+  fireEvent.change(search, { target: { value: "retained search" } });
+  mockUseAdaptiveLayout.mockReturnValue("medium");
+  view.rerender(<AppShell {...props} rightPanel={panel} />);
+  expect(search).toHaveFocus();
+  expect(search).toHaveValue("retained search");
+  view.rerender(<AppShell {...props} />);
+  expect(trigger).toHaveFocus();
+});
