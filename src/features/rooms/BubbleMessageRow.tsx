@@ -1,8 +1,4 @@
-import {
-  messageActionSurfaceClassName,
-  openMessageContextMenu,
-  useMessageActionTouch,
-} from "./messageActionSurface";
+import { messageActionSurfaceClassName, useMessageActionTouch } from "./messageActionSurface";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useDisplayFormats } from "@/features/appearance/useDisplayFormats";
 import { useMessageSpacing } from "@/features/appearance/messageSpacing";
@@ -74,7 +70,6 @@ export function BubbleMessageRow({
   return (
     <div
       id={`message-${message.event_id}`}
-      onContextMenu={(event) => openMessageContextMenu(event, getActionsHandle(rowKey))}
       style={spacingStyle}
       className={cn(
         "group relative flex min-w-0 w-full max-w-120 gap-2",

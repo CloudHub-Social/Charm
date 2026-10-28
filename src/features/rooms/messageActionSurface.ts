@@ -1,4 +1,4 @@
-import { useRef, type MouseEvent, type TouchEvent } from "react";
+import { useRef, type MouseEvent, type PointerEvent, type TouchEvent } from "react";
 import type { MessageActionsHandle } from "./MessageActions";
 
 /**
@@ -31,11 +31,35 @@ function hasTextSelection(): boolean {
 }
 
 /**
- * Touch gestures reveal the native menu button, not a focusable message container.
+ * Message gestures reveal the native menu button, not a focusable message container.
+ * Secondary clicks use pre-click selection; deliberate selections stay native.
  * Pointer hover and keyboard Tab use the same toolbar's CSS focus/hover states.
  */
 export function useMessageActionTouch(getActions: () => MessageActionsHandle | undefined) {
   const eligibleTap = useRef(false);
+  const selectionBeforeSecondaryClick = useRef<boolean | null>(null);
+
+  function clearSecondaryClick() {
+    selectionBeforeSecondaryClick.current = null;
+  }
+
+  function onPointerDownCapture(event: PointerEvent<HTMLDivElement>) {
+    // Capture before the browser can select the clicked word on mousedown.
+    // Touch selections and primary-button drags keep their native behavior.
+    selectionBeforeSecondaryClick.current =
+      event.pointerType !== "touch" &&
+      (event.button === 2 || (event.button === 0 && event.ctrlKey)) &&
+      isMessageTarget(event) &&
+      !isInteractiveTarget(event.target)
+        ? hasTextSelection()
+        : null;
+  }
+
+  function onContextMenu(event: MouseEvent<HTMLDivElement>) {
+    const selectedBeforeClick = selectionBeforeSecondaryClick.current;
+    clearSecondaryClick();
+    openMessageContextMenu(event, getActions(), selectedBeforeClick);
+  }
 
   function cancelTouch() {
     eligibleTap.current = false;
@@ -72,6 +96,10 @@ export function useMessageActionTouch(getActions: () => MessageActionsHandle | u
   }
 
   return {
+    onPointerDownCapture,
+    onPointerCancelCapture: clearSecondaryClick,
+    onKeyDownCapture: clearSecondaryClick,
+    onContextMenu,
     onTouchStart,
     onTouchEnd,
     onTouchMove: cancelTouch,
@@ -79,14 +107,15 @@ export function useMessageActionTouch(getActions: () => MessageActionsHandle | u
   };
 }
 
-export function openMessageContextMenu(
+function openMessageContextMenu(
   event: MouseEvent<HTMLDivElement>,
   actions: MessageActionsHandle | undefined,
+  selectedBeforeClick: boolean | null,
 ): void {
   if (
     !isMessageTarget(event) ||
     isInteractiveTarget(event.target) ||
-    hasTextSelection() ||
+    (selectedBeforeClick ?? hasTextSelection()) ||
     !actions?.openMenu
   )
     return;

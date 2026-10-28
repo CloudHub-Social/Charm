@@ -434,3 +434,33 @@ test("secondary word selection does not suppress the message menu", async ({ pag
   await page.keyboard.press("Escape");
   await captureSnapshot(page, "message-actions-secondary-word-selection");
 });
+
+test("deliberate text selection keeps its native context menu", async ({ page }) => {
+  const composer = page.getByPlaceholder(`Message ${ROOM.name}`);
+  await composer.fill("Keep deliberate selection native");
+  await composer.press("Enter");
+  await expect(page.getByText(/sending…/)).toHaveCount(0);
+  const body = page.getByText("Keep deliberate selection native", { exact: true });
+  await body.evaluate((element) => {
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    selection.addRange(range);
+    element.addEventListener(
+      "contextmenu",
+      (event) => {
+        queueMicrotask(() => {
+          element.setAttribute("data-context-prevented", String(event.defaultPrevented));
+        });
+      },
+      { once: true },
+    );
+  });
+  await body.click({ button: "right" });
+  await expect(body).toHaveAttribute("data-context-prevented", "false");
+  await expect(page.getByRole("menu")).toHaveCount(0);
+  await expect
+    .poll(() => page.evaluate(() => window.getSelection()!.toString()))
+    .toBe("Keep deliberate selection native");
+});

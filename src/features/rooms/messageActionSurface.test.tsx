@@ -1,18 +1,14 @@
 import { createPortal } from "react-dom";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { openMessageContextMenu, useMessageActionTouch } from "./messageActionSurface";
+import { useMessageActionTouch } from "./messageActionSurface";
 
 function setup(expanded = false) {
   const actions = { startLongPress: vi.fn(), cancelLongPress: vi.fn(), openMenu: vi.fn() };
   function Fixture() {
     const touch = useMessageActionTouch(() => actions);
     return (
-      <div
-        data-testid="message"
-        {...touch}
-        onContextMenu={(event) => openMessageContextMenu(event, actions)}
-      >
+      <div data-testid="message" {...touch}>
         <span>Message text</span>
         <details>
           <summary>
@@ -77,6 +73,7 @@ describe("message action surface", () => {
     for (const element of [screen.getByRole("link"), screen.getByText("Media control")]) {
       touchStart(element);
       touchEnd(element);
+      fireEvent.pointerDown(element, { button: 2, pointerType: "mouse" });
       fireEvent.contextMenu(element);
     }
     expect(trigger).not.toHaveFocus();
@@ -112,18 +109,21 @@ describe("message action surface", () => {
     }
   });
 
-  it("opens actions when secondary click introduces selection after pointer down", () => {
+  it.each([
+    { button: 2, ctrlKey: false },
+    { button: 0, ctrlKey: true },
+  ])("opens actions for secondary-click selection ($button, $ctrlKey)", (pointer) => {
     const { text, actions } = setup();
     const selection = window.getSelection()!;
     selection.removeAllRanges();
-    fireEvent.pointerDown(text, { button: 2, pointerType: "mouse" });
+    fireEvent.pointerDown(text, { ...pointer, pointerType: "mouse" });
     const range = document.createRange();
     range.setStart(text.firstChild!, 0);
     range.setEnd(text.firstChild!, 7);
     selection.addRange(range);
     try {
       expect(selection.toString()).toBe("Message");
-      expect(fireEvent.contextMenu(text, { button: 2 })).toBe(false);
+      expect(fireEvent.contextMenu(text, pointer)).toBe(false);
       expect(actions.openMenu).toHaveBeenCalledOnce();
       expect(selection.toString()).toBe("Message");
     } finally {
@@ -165,6 +165,40 @@ describe("message action surface", () => {
     }
   });
 
+  it("preserves text selected by a touch gesture before its context menu", () => {
+    const { text, actions } = setup();
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    fireEvent.pointerDown(text, { button: 0, pointerType: "touch" });
+    const range = document.createRange();
+    range.selectNodeContents(text);
+    selection.addRange(range);
+    try {
+      expect(fireEvent.contextMenu(text, { button: 2 })).toBe(true);
+      expect(actions.openMenu).not.toHaveBeenCalled();
+      expect(selection.toString()).toBe("Message text");
+    } finally {
+      selection.removeAllRanges();
+    }
+  });
+
+  it("discards selection state from a cancelled secondary pointer", () => {
+    const { text, actions } = setup();
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    fireEvent.pointerDown(text, { button: 2, pointerType: "mouse" });
+    fireEvent.pointerCancel(text, { pointerType: "mouse" });
+    const range = document.createRange();
+    range.selectNodeContents(text);
+    selection.addRange(range);
+    try {
+      expect(fireEvent.contextMenu(text, { button: 2 })).toBe(true);
+      expect(actions.openMenu).not.toHaveBeenCalled();
+    } finally {
+      selection.removeAllRanges();
+    }
+  });
+
   it("does not steal focus back from a menu opened by long press", () => {
     const { trigger, text } = setup(true);
     const focusedControl = screen.getByRole("button", { name: "Media control" });
@@ -187,6 +221,7 @@ describe("message action surface", () => {
     const summary = screen.getByText("Disclosure toggle");
     touchStart(summary);
     expect(fireEvent.touchEnd(summary, { touches: [] })).toBe(true);
+    fireEvent.pointerDown(summary, { button: 2, pointerType: "mouse" });
     expect(fireEvent.contextMenu(summary)).toBe(true);
     expect(trigger).not.toHaveFocus();
     expect(actions.startLongPress).not.toHaveBeenCalled();
@@ -199,6 +234,7 @@ describe("message action surface", () => {
     expect(row).not.toContainElement(target);
     touchStart(target);
     expect(fireEvent.touchEnd(target, { touches: [] })).toBe(true);
+    fireEvent.pointerDown(target, { button: 2, pointerType: "mouse" });
     expect(fireEvent.contextMenu(target)).toBe(true);
     expect(trigger).not.toHaveFocus();
     expect(actions.startLongPress).not.toHaveBeenCalled();

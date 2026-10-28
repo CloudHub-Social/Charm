@@ -387,6 +387,40 @@ coordinator. No message redispatch or new worker was created. The seven serial
 integration tasks above remain proposals gated by exact file release; the waiver
 changes review policy only and does not transfer implementation ownership.
 
+## Secondary-click selection review follow-up
+
+Finding [4400490775](https://github.com/CloudHub-Social/Charm/pull/601#discussion_r4400490775)
+reviewed `9daacf08` and identified that the context handler cannot distinguish
+pre-existing deliberate selection from a word selected by secondary-click
+platform behavior before `contextmenu` fires. Test-first head
+`b6df7968473c7e1e512b6edd48159bf89c5df3bd`,
+[Quality 40693790050](https://github.com/CloudHub-Social/Charm/actions/runs/40693790050),
+frontend job 122835178821 reproduced the event-order assertion failure while
+2,254 other unit tests passed. This is a behavioral failure, not a coverage-floor
+or typecheck failure.
+
+The shared message gesture hook now captures selection before a mouse secondary
+or control-click, consumes that snapshot for the corresponding context request,
+and clears it on keyboard entry or pointer cancellation. All three owned message
+rows use that handler. Deliberate pre-existing selection, touch selection, native
+controls, links and portalled content retain their native behavior; the code does
+not clear selection to make the menu open, and existing action permissions remain
+with MessageActions. Added regressions exercise deliberate selection, cancelled
+pointer state and keyboard context entry as well as automatic word selection.
+
+The browser regression uses a real secondary mouse click with explicit selection
+injection between pointer-down and context-menu to reproduce the platform event
+order in Linux CI. A separate real-click journey preserves an existing deliberate
+selection and verifies that its native context event is not prevented. This is
+not a physical macOS/WKWebView reproduction or device-acceptance claim. Exact
+repair-head CI, screenshots and substantive review disposition are required.
+
+The independently routed API-proxy failure remains with the existing backend
+owner under coordinator receipt 6469710280. Snapshot set 120728 describes the old
+`9daacf08` head, not this repair; the new head requires its own visual evidence
+and applicable approval. Codex remains owner-waived, not passed. No backend,
+RoomsScreen, Spec52, Composer or other package files change in this repair.
+
 ## Acceptance and remaining work
 
 Implementation is not release or physical-device acceptance. Record current-head
