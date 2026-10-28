@@ -264,26 +264,96 @@ multitasking checks remain **unverified and blocking acceptance**. The owner or
 device tester must supply a genuine current-build record. No merge, deployment,
 release, default-on promotion or physical-device acceptance has occurred here.
 
-### Separate programme custody
+### Programme reconciliation — 2026-10-28, 08:18 Toronto
 
-The full P0–P12 programme remains outstanding according to its original package
-scope; this ledger neither renumbers it nor closes #539/#526. Coordinator-reported
-package state is kept separate from verified implementation and acceptance:
+This provider-read checkpoint supersedes the earlier **task-started/awaiting
+approval** package rows. It does not supersede the underlying P0–P12 plan,
+owner holds or acceptance requirements. No duplicate workers were dispatched.
+Current continuation is owned coordination and this ledger only; shared-file
+transfers remain a prerequisite to implementation.
 
-| Package | Current custody and stage | Integration dependency |
+| Package / record | Current source and observed stage | Remaining owner and acceptance condition |
 | --- | --- | --- |
-| P1/P2 | PR #601 executor; repaired source and CI evidence above; external review/preview/device gates remain | Retain message rows/actions/ChatShell, Specs 52/64, gallery and this ledger until explicit release |
-| P3 reaction details | Separate native executor; task started/read work reported; awaiting native tool approvals | Reaction components/tests only; no #601/shared-file edits |
-| P4 voice shell | Separate native executor; task started/read work reported; awaiting native tool approvals | Voice components/tests only; PR #566 Composer wiring excluded |
-| P5 adaptive/tablet layout | Separate native task reported; readiness requires PR #591 ownership reconciliation | Adaptive hook/AppShell scope; shared specs/gallery require serialized integration |
+| P1/P2, [#601](https://github.com/CloudHub-Social/Charm/pull/601) | `dfd9e8ad4557e07d769375c4aec5d289d2d24c1b`; [Quality 40624505133](https://github.com/CloudHub-Social/Charm/actions/runs/40624505133), [iOS 40624504948](https://github.com/CloudHub-Social/Charm/actions/runs/40624504948), [CodeQL 40624504883](https://github.com/CloudHub-Social/Charm/actions/runs/40624504883) and docs passed at this head | PR601 retains message rows/actions/ChatShell, gallery and ledger. Independent review, preview and physical acceptance remain separate; this is not a qualified programme or merge decision |
+| P3 reactions, [#609](https://github.com/CloudHub-Social/Charm/pull/609) | Current `6a32b75a8d5ecf3e3fe711ba3ec0777f782c3625`, not the earlier queued `8ce7a12d`; [Quality 40669232904](https://github.com/CloudHub-Social/Charm/actions/runs/40669232904) failed frontend and browser; Storybook/axe passed | P3 keeps reaction components/tests. Current failures and three unresolved threads require disposition before an integration candidate is frozen |
+| P4 voice, draft [#608](https://github.com/CloudHub-Social/Charm/pull/608) | `e82a72eaa99bb8f5f91f4595a8f97d9b418f8b61`; [Quality 40636392895](https://github.com/CloudHub-Social/Charm/actions/runs/40636392895) passed for the standalone component package; eight inspected screenshots were coordinator-reported | P4 keeps voice components/tests. Composer/ChatShell are not wired; component CI and screenshot inspection do not prove integrated recording/send/retry behavior |
+| P5 adaptive, [#607](https://github.com/CloudHub-Social/Charm/pull/607) | Current `a10c15ee3c45610f364542cba959effd596f7d26`, not `72275623`; [Quality 40660773360](https://github.com/CloudHub-Social/Charm/actions/runs/40660773360) failed frontend; browser and Storybook/axe passed | P5 retains adaptive hook/AppShell. RoomsScreen/Spec52 integration remains explicitly untransferred; six threads remain unresolved, including duplicate root causes |
+| Navigation [#591](https://github.com/CloudHub-Social/Charm/pull/591) | Draft `173448659c1b67a10d21b8efc8c08c3e525cc1fe`; owns RoomsScreen tests and navigation/accessibility changes, plus Spec64 changes | No file release has been established. Preserve accessibility naming and existing uncommitted work; draft status is not permission to take ownership |
+| Composer commands [#566](https://github.com/CloudHub-Social/Charm/pull/566) | Open `79b8ecfcc653419ab058b5213c0044e8f59bb42f`; owns ChatShell/props, send/command paths and Composer tests | Resolve exact shared-file custody before P4 wiring. Preserve nickname/DM commands and existing permission/account/room behavior |
+| Backend [#606](https://github.com/CloudHub-Social/Charm/pull/606) | Open `55a43a91e13e7d923d04eb866769fc1f2c8dfc02`; independent companion/R2 owner | No backend/storage/deployment work transfers to this integrator; preview availability remains that stream's dependency |
+| P0, P6–P11 and P12 | Retained, **unqualified/unassigned in the available numbered registry**. No executor, implementation, CI, rollout or acceptance receipt is established here for these packages | Coordinator must restore the original exact numbered outcome/acceptance mapping and assign an owner before execution. Do not silently drop, renumber, infer completion or launch duplicates |
 
-The #601 executor accepts a later **bounded integrator role** only after an
-explicit one-writer release and a separate integration scope. Integration has
-not started, other task claims/approvals remain with their owners, and started
-or approval-waiting tasks are not completed packages. Private task identifiers
-remain in EA tracking, not in published documentation. Remaining profiles,
-primitives, drafts/restart continuity, notification/Activity, recovery,
-threads, calls and platform-polish packages retain their independent gates.
+The original research attachment is still unavailable to this executor. The
+remaining named outcomes retained by the handoff are shared primitives,
+supported flag profiles/rollback, durable drafts/restart continuity,
+notification/Activity parity, verification/recovery, threads, calls and
+expression/platform polish. Their exact mapping to the unresolved numbered
+packages is not established by this repository ledger; it must be reconciled
+with the original plan rather than invented. Issues #539/#526 remain open.
+
+#### Current failure and review dispositions
+
+P5 frontend job
+[122723265031](https://github.com/CloudHub-Social/Charm/actions/runs/40660773360/job/122723265031)
+reported **2,237 passed / one failed**, not a coverage-floor failure. The compact
+Spaces-root test still requests a root tab while conversation detail intentionally
+hides it; the accessible Back control is present in the failure output. Proposed
+repair remains a real **detail → Back → root → Spaces** journey, retaining
+assertions for the destination and absence of a desktop rail. No assertion was
+removed or timeout increased here. This fresh failure supersedes older counts
+and heads; it has not been fixed in this coordination-only change.
+
+P5 unresolved threads group into four root causes: native room-focus/notification
+suppression (`4396823548`, duplicate `4398661643`), hidden pinned-jump destination
+(`4396823551`, duplicate `4396826426`), same-PR Spec52 documentation
+(`4396823555`), and panel focus across the medium/wide breakpoint
+(`4398663196`). The Spaces-root visibility defect was fixed at `72275623`;
+the stale return-focus defect was fixed at `a10c15ee`. Those two resolved findings
+do not resolve the new breakpoint-focus finding or shared integration defects.
+
+P3 frontend job
+[122751594740](https://github.com/CloudHub-Social/Charm/actions/runs/40669232904/job/122751594740)
+reported **2,242 passed / one failed**: the tombstoned-room ChatShell test expects
+the reactor-details control to be native-disabled. Preserve the distinction
+between read-only **view details** and forbidden **toggle mutation**; after
+ownership release, the integration assertion must prove no send/mutation is
+possible while detail viewing remains accessible. Do not simply delete the
+read-only test or change its expectation without behavioral proof.
+
+P3 browser job
+[122751594620](https://github.com/CloudHub-Social/Charm/actions/runs/40669232904/job/122751594620)
+has **37 terminal failures**, including the hover-tooltip journey and the
+reaction-content matrix. One directly observed compact failure places a target's
+right edge at 348px in a 320px viewport. Retain containment, 44px/nonoverlapping
+hit-target and gesture assertions. Failures must be split into shared-row/picker
+integration versus P3-owned interaction defects using exact logs; they are not
+all declared fixed by PR601 or all attributed to the shared shell.
+
+P3's three unresolved threads are read-only detail gestures (`4397814512`),
+enabled fallback focus (`4397814522`) and the newer stale return-focus fieldset
+(`4398672531`). Earlier Seer duplicates marked fixed are evidence to reconcile,
+not grounds for this integrator to resolve current live threads on another
+owner's behalf.
+
+#### Proposed serial integration tasks — none started
+
+| Sequence | Files / proposed effect | Explicit release needed | Required evidence before the next effect |
+| --- | --- | --- | --- |
+| 1. Freeze custody | Record source SHA, target branch, exact file list, uncommitted-work disposition and sole writer for each seam in this handoff | PR591 navigation owner; PR601 shared owner; PR566 command owner; P3/P4/P5 component owners | An actual owner release/acknowledgement and designated integration scope, not this proposal or a worker dispatch |
+| 2. Navigation test seam | RoomsScreen.test.tsx: use Back before Spaces; retain root/detail, destination and no-desktop-rail assertions | PR591 releases this exact test seam; choose one receiving branch/PR with P5 owner | Current-head frontend unit/coverage result; then full applicable CI. No copy into several branches |
+| 3. Medium semantic integration | RoomsScreen.tsx/tests: move existing drawer declarations before the focus effect without duplicating state; derive adaptive width; clear native room focus while replacement context hides chat; close pinned context on jump | PR591 + P5 release the precise navigation seam | Open/close and wide→medium-with-panel-open tests; notification focus and visible pinned destination; preserve #591 accessibility changes |
+| 4. Adaptive documentation/focus | Spec52/64: publish staged flag/width/input behavior in the **same PR** as the behavior; P5 fixes panel-focus preservation in its own AppShell seam | Explicit shared-spec reconciliation with #591 and PR601; AppShell remains with P5 until released | Panel-open resize retains active panel control, close restores a valid control, root/detail and rollback tests, exact-head review and current screenshots |
+| 5. Reaction integration | Combine a frozen P3 candidate with preserved PR601 rows/actions/picker behavior; adapt ChatShell read-only tests to prove mutation exclusion and accessible details | P3 release of candidate; PR601 release for exact row/ChatShell seam | 1/5/20 reactions across three modes/compact widths, actual hit tests, pointer/touch/keyboard details without toggling, focus when a reaction disappears, current review dispositions |
+| 6. Voice integration | One composer shell with `VoiceRecorder presentation="composer"`; remove only the redundant idle panel; preserve busy/send/attachment contracts and add the integrated changeset | PR566 + PR601 explicitly release Composer/ChatShell/send boundaries; P4 releases frozen component contract | Permission cancel/unmount/room switch, draft/reply/upload/encryption/local echo continuity, recording/preview/send/failure/retry/discard, hosted journeys and screenshots |
+| 7. Acceptance and remaining packages | Requalify the exact assembled revision; reconcile remaining P0–P12 assignments and device matrix | Coordinator supplies original numbered acceptance mapping; owner/device tester supplies physical evidence | Separate source/CI/review/snapshot, preview/live, phone/iPad and release decisions; no implied merge/deploy/flag promotion |
+
+The integrator accepts these later bounded serial tasks, subject to the releases
+above. Shared RoomsScreen and Spec52 writes have **not** started; no task was
+redispatched and no P5 targeted queue was repeated. Child components, PR591,
+PR566 and backend code remain with their owners. Independent Codex review/quota
+is not bypassed under this continuation; tests, security, accessibility,
+screenshot and device requirements stay in force. A separate task's reported
+policy does not by itself revise this owner's current no-bypass boundary.
 
 ## Acceptance and remaining work
 
