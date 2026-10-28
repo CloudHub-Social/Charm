@@ -18,7 +18,14 @@ const mockUseAdaptiveLayout = vi.fn();
 const mockUseFlag = vi.hoisted(() => vi.fn(() => true));
 const invokeDrag = vi.hoisted(() => vi.fn());
 vi.mock("./useAdaptiveLayout", () => ({
-  useAdaptiveLayout: () => mockUseAdaptiveLayout(),
+  useAdaptiveLayoutState: () => ({
+    width:
+      mockUseAdaptiveLayout() === "mobile"
+        ? "compact"
+        : mockUseAdaptiveLayout() === "medium"
+          ? "medium"
+          : "wide",
+  }),
 }));
 vi.mock("@/featureFlags", () => ({ useFlag: () => mockUseFlag() }));
 vi.mock("@use-gesture/react", () => ({
@@ -317,8 +324,7 @@ describe("AppShell", () => {
 
     expect(screen.getByText("chat-content")).toBeInTheDocument();
     expect(screen.queryByText("room-list")).not.toBeInTheDocument();
-    expect(screen.getByRole("navigation", { name: "Primary" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Chats" })).toHaveAttribute("aria-current", "page");
+    expect(screen.queryByRole("navigation", { name: "Primary" })).not.toBeInTheDocument();
   });
 
   it("returns to the room list after a committed leading-edge swipe", () => {
@@ -467,5 +473,68 @@ describe("AppShell", () => {
 
     expect(screen.getByText("room-list")).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Primary" })).toBeInTheDocument();
+  });
+});
+
+describe("adaptive context and state ownership", () => {
+  it("replaces medium chat, restores focus, and retains draft and owner across all widths", () => {
+    mockUseFlag.mockReturnValue(true);
+    mockUseAdaptiveLayout.mockReturnValue("desktop");
+    const disposed = vi.fn();
+    function StatefulChat() {
+      const [draft, setDraft] = useState("");
+      useEffect(() => () => disposed(), []);
+      return (
+        <>
+          <VisibilityProbe />
+          <input
+            aria-label="Synthetic draft"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+          />
+        </>
+      );
+    }
+    const props = {
+      activeRoomId: "!synthetic:example.org",
+      selectionRequestId: 0,
+      mobileView: "detail" as const,
+      onMobileViewChange: vi.fn(),
+      spaceRail: <div>spaces</div>,
+      roomList: <div>rooms</div>,
+      content: <StatefulChat />,
+      rightPanel: null,
+    };
+    const view = render(<AppShell {...props} />);
+    const draft = screen.getByRole("textbox", { name: "Synthetic draft" });
+    fireEvent.change(draft, { target: { value: "retained draft" } });
+    draft.focus();
+    mockUseAdaptiveLayout.mockReturnValue("medium");
+    view.rerender(<AppShell {...props} rightPanel={<button>Close synthetic context</button>} />);
+    expect(draft).not.toBeVisible();
+    expect(screen.getByRole("region", { name: "Room context" })).toHaveFocus();
+    expect(screen.getByText("chat-hidden")).not.toBeVisible();
+    view.rerender(<AppShell {...props} />);
+    expect(draft).toHaveFocus();
+    for (const width of ["mobile", "medium", "desktop"]) {
+      mockUseAdaptiveLayout.mockReturnValue(width);
+      view.rerender(<AppShell {...props} />);
+      expect(screen.getByRole("textbox", { name: "Synthetic draft" })).toBe(draft);
+      expect(draft).toHaveValue("retained draft");
+      expect(disposed).not.toHaveBeenCalled();
+    }
+    view.rerender(<AppShell {...props} rightPanel={<div>wide-context</div>} />);
+    expect(draft).toBeVisible();
+    expect(screen.getByText("wide-context")).toBeVisible();
+    view.unmount();
+    expect(disposed).toHaveBeenCalledOnce();
+  });
+
+  it("retains legacy medium context alongside chat when UX refresh is disabled", () => {
+    mockUseFlag.mockReturnValue(false);
+    mockUseAdaptiveLayout.mockReturnValue("medium");
+    renderShell("!synthetic:example.org", { rightPanel: <div>legacy-context</div> });
+    expect(screen.getByText("chat-content")).toBeVisible();
+    expect(screen.getByText("legacy-context")).toBeVisible();
   });
 });
