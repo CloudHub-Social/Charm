@@ -112,6 +112,59 @@ describe("message action surface", () => {
     }
   });
 
+  it("opens actions when secondary click introduces selection after pointer down", () => {
+    const { text, actions } = setup();
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    fireEvent.pointerDown(text, { button: 2, pointerType: "mouse" });
+    const range = document.createRange();
+    range.setStart(text.firstChild!, 0);
+    range.setEnd(text.firstChild!, 7);
+    selection.addRange(range);
+    try {
+      expect(selection.toString()).toBe("Message");
+      expect(fireEvent.contextMenu(text, { button: 2 })).toBe(false);
+      expect(actions.openMenu).toHaveBeenCalledOnce();
+      expect(selection.toString()).toBe("Message");
+    } finally {
+      selection.removeAllRanges();
+    }
+  });
+
+  it("preserves a deliberate selection made before secondary pointer down", () => {
+    const { text, actions } = setup();
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    const range = document.createRange();
+    range.selectNodeContents(text);
+    selection.addRange(range);
+    try {
+      fireEvent.pointerDown(text, { button: 2, pointerType: "mouse" });
+      expect(fireEvent.contextMenu(text, { button: 2 })).toBe(true);
+      expect(actions.openMenu).not.toHaveBeenCalled();
+      expect(selection.toString()).toBe("Message text");
+    } finally {
+      selection.removeAllRanges();
+    }
+  });
+
+  it("does not reuse a secondary-click snapshot for a keyboard context request", () => {
+    const { text, actions } = setup();
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    fireEvent.pointerDown(text, { button: 2, pointerType: "mouse" });
+    const range = document.createRange();
+    range.selectNodeContents(text);
+    selection.addRange(range);
+    try {
+      fireEvent.keyDown(text, { key: "ContextMenu" });
+      expect(fireEvent.contextMenu(text, { button: 2 })).toBe(true);
+      expect(actions.openMenu).not.toHaveBeenCalled();
+    } finally {
+      selection.removeAllRanges();
+    }
+  });
+
   it("does not steal focus back from a menu opened by long press", () => {
     const { trigger, text } = setup(true);
     const focusedControl = screen.getByRole("button", { name: "Media control" });

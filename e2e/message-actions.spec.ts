@@ -397,3 +397,40 @@ test("opening right-click release cannot select a menu action", async ({ page })
   await expect(page.getByRole("button", { name: "Cancel reply" })).toBeVisible();
   await captureSnapshot(page, "message-actions-context-release");
 });
+
+test("secondary word selection does not suppress the message menu", async ({ page }) => {
+  const composer = page.getByPlaceholder(`Message ${ROOM.name}`);
+  await composer.fill("Secondary click opens actions");
+  await composer.press("Enter");
+  await expect(page.getByText(/sending…/)).toHaveCount(0);
+  const body = page.getByText("Secondary click opens actions", { exact: true });
+  await body.evaluate((element) => {
+    window.getSelection()!.removeAllRanges();
+    // Linux CI does not establish macOS native behavior. Simulate its relevant
+    // event ordering, while using a real secondary mouse click for the journey.
+    element.addEventListener(
+      "mousedown",
+      (event) => {
+        if ((event as MouseEvent).button !== 2) return;
+        const node = document.createTreeWalker(element, NodeFilter.SHOW_TEXT).nextNode()!;
+        const range = document.createRange();
+        range.setStart(node, 0);
+        range.setEnd(node, "Secondary".length);
+        window.getSelection()!.addRange(range);
+      },
+      { once: true },
+    );
+    element.addEventListener(
+      "contextmenu",
+      () => {
+        element.setAttribute("data-selection-at-context", window.getSelection()!.toString());
+      },
+      { once: true },
+    );
+  });
+  await body.click({ button: "right" });
+  await expect(body).toHaveAttribute("data-selection-at-context", "Secondary");
+  await expect(page.getByRole("menuitem", { name: "Reply", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await captureSnapshot(page, "message-actions-secondary-word-selection");
+});
