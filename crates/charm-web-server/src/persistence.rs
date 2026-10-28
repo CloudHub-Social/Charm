@@ -397,7 +397,8 @@ impl PersistenceStore {
                      clearly intended. Set {MASTER_KEY_ENV} too."
                 ));
             }
-            (Err(_), Err(_)) => return Ok(None),
+            (Err(_), Err(_)) if !crate::state_storage::configured() => return Ok(None),
+            (Err(_), Err(_)) => return Err("R2 state requires the existing session master key".into()),
             (Ok(key_b64), _) => key_b64,
         };
         let key_bytes = BASE64
@@ -412,7 +413,9 @@ impl PersistenceStore {
         let key = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes));
 
         let (store, durable_session_backend): (Arc<dyn ObjectStore>, bool) =
-            if let Ok(bucket) = spaces_bucket {
+            if let Some(state) = crate::state_storage::destination()? {
+                (state, true)
+            } else if let Ok(bucket) = spaces_bucket {
                 (Arc::new(spaces_store_from_env(&bucket)?), true)
             } else {
                 let dir = std::env::var(DATA_DIR_ENV).unwrap_or_else(|_| "./data".to_string());
@@ -517,7 +520,7 @@ impl PersistenceStore {
             .await
         {
             Ok(_) => Ok(()),
-            Err(object_store::Error::NotImplemented { .. }) => {
+            Err(object_store::Error::NotImplemented { .. }) if !self.durable_session_backend => {
                 // LocalFileSystem, used for local development and these
                 // single-process tests, has no conditional writes. The
                 // per-token lock still preserves its in-process ordering.
@@ -1851,7 +1854,7 @@ impl PersistenceStore {
                     }
                     continue;
                 }
-                Err(object_store::Error::NotImplemented { .. }) => {
+                Err(object_store::Error::NotImplemented { .. }) if !self.durable_session_backend => {
                     // The read above already confirmed the object exists,
                     // so an unconditional overwrite here is a same-object
                     // update, not a resurrection — safe even without
@@ -2087,7 +2090,7 @@ impl PersistenceStore {
                             .to_string(),
                     );
                 }
-                Err(object_store::Error::NotImplemented { .. }) => {
+                Err(object_store::Error::NotImplemented { .. }) if !self.durable_session_backend => {
                     return self
                         .store
                         .put(&path, PutPayload::from(json))

@@ -13,6 +13,8 @@ pub mod release_guard;
 pub mod routes;
 pub mod session;
 pub mod sync_loop;
+pub mod state_migration;
+pub mod state_storage;
 
 use std::sync::Arc;
 

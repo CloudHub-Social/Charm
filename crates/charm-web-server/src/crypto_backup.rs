@@ -237,6 +237,7 @@ impl ActiveWriterFence {
 pub struct CryptoBackupStore {
     key: Aes256Gcm,
     store: Arc<dyn ObjectStore>,
+    coordination: Option<Arc<dyn ObjectStore>>,
     writer_id: String,
     enforce_writer_fence: bool,
 }
@@ -269,6 +270,10 @@ impl Drop for TempDirGuard {
 }
 
 impl CryptoBackupStore {
+    fn coordination_store(&self) -> &dyn ObjectStore {
+        self.coordination.as_deref().unwrap_or(self.store.as_ref())
+    }
+
     pub async fn from_env() -> Result<Option<Self>, String> {
         let bucket = match std::env::var(BUCKET_ENV) {
             Ok(bucket) if !bucket.trim().is_empty() => bucket,
@@ -293,6 +298,7 @@ impl CryptoBackupStore {
         );
         Ok(Some(Self {
             key,
+            coordination: crate::state_storage::destination()?,
             store,
             writer_id: random_identifier(),
             enforce_writer_fence: true,
@@ -397,6 +403,7 @@ impl CryptoBackupStore {
         Self {
             key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes)),
             store: Arc::new(object_store::memory::InMemory::new()),
+            coordination: None,
             writer_id: "test-writer".to_string(),
             enforce_writer_fence: false,
         }
@@ -412,6 +419,7 @@ impl CryptoBackupStore {
         Self {
             key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes)),
             store,
+            coordination: None,
             writer_id: writer_id.to_string(),
             enforce_writer_fence,
         }
@@ -534,7 +542,7 @@ impl CryptoBackupStore {
         if !self.enforce_writer_fence {
             return Ok(None);
         }
-        let result = match self.store.get(&ObjectPath::from(ACTIVE_WRITER_PATH)).await {
+        let result = match self.coordination_store().get(&ObjectPath::from(ACTIVE_WRITER_PATH)).await {
             Ok(result) => result,
             Err(object_store::Error::NotFound { .. }) => return Ok(None),
             Err(error) => {
@@ -600,7 +608,7 @@ impl CryptoBackupStore {
             ..Default::default()
         };
         match self
-            .store
+            .coordination_store()
             .put_opts(
                 &ObjectPath::from(ACTIVE_WRITER_PATH),
                 PutPayload::from(payload),

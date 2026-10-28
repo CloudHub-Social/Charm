@@ -24,6 +24,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // must run before anything else in this function logs.
     let _sentry_guard = observability::init();
 
+    charm_web_server::state_storage::prepare().await?;
+
     let crypto_backup = match charm_web_server::crypto_backup::CryptoBackupStore::from_env().await {
         Ok(backup) => backup.map(Arc::new),
         Err(e) => {
