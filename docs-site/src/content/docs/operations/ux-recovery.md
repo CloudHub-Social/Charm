@@ -409,8 +409,11 @@ with MessageActions. Added regressions exercise deliberate selection, cancelled
 pointer state and keyboard context entry as well as automatic word selection.
 
 The browser regression uses a real secondary mouse click with explicit selection
-injection between pointer-down and context-menu to reproduce the platform event
-order in Linux CI. A separate real-click journey preserves an existing deliberate
+injection after pointer-down, immediately before the app's context handler, to
+reproduce the observable platform event order in Linux CI. The first browser
+fixture injected during mousedown, but Linux's default cleared that range before
+context-menu; its failure was fixture evidence, not independent product proof.
+The corrected fixture retains both the selected-word and open-menu assertions. A separate real-click journey preserves an existing deliberate
 selection and verifies that its native context event is not prevented. This is
 not a physical macOS/WKWebView reproduction or device-acceptance claim. Exact
 repair-head CI, screenshots and substantive review disposition are required.
