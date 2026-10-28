@@ -158,3 +158,37 @@ when interval callbacks were delayed or suspended.
 - Trim-before-send if users ask for it.
 - Playback-speed control on received voice messages (small `AudioPlayer`
   enhancement).
+
+## Unified composer accessory boundary
+
+`VoiceRecorder` offers an opt-in `presentation="composer"` for the single composer
+shell: idle is one labelled microphone button with a 44px minimum target, without
+an additional bordered recorder panel. Requesting, recording, preview, failed-send
+retry and discard reuse the existing capture and attachment controllers. The
+`disabled` input prevents a competing text/upload send from starting voice capture
+or voice send; stop/discard remain available. `onBusyChange` includes pending
+permission, capture, preview and voice send. `onCaptureChange` retains its narrower
+capture-only meaning. Preview audio fits the available width and pauses on send.
+
+This component package does **not** wire the accessory into Composer/ChatShell.
+The programme integrator owns that serial change after reconciling PRs 601 and
+566: mount exactly one recorder in the existing composer shell under the existing
+default-off `voice_recording` flag, remove the separate idle panel mount, retain
+the account/room key, and pass the existing attachment and failed-upload callbacks.
+Use stable busy callbacks to suspend competing text submission and uploads while
+retaining the editor instance, private draft, reply and pending upload state.
+Pass external send/mutation ownership through `disabled`; do not feed voice busy
+back into its own send guard. Unmount on account/room/flag changes and retain the
+existing chat-visibility context. The existing send path continues to own local
+echo, encryption, transaction IDs and uploaded media; this accessory must never
+create a second send path. No integrated completion is claimed until this wiring
+and its regression evidence exist.
+
+Dedicated unit definitions cover pending-send exclusion, retry identity, compact
+and wide idle access, pointer/keyboard controls and permission cancellation. The
+standalone Storybook fixture covers compact/wide sizing and keyboard focus with
+CI axe/screenshot capture. These synthetic fixtures do not prove actual composer
+integration, native microphone permission prompts, physical phone/iPad behavior,
+rotation/multitasking, screen-reader usability or cross-client interoperability.
+All execution and qualification run in GitHub Actions; device acceptance remains
+separate and outstanding.
