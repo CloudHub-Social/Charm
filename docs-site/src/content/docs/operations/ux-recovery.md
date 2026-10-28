@@ -187,6 +187,104 @@ A gate runner completing is not a clean code-review result. The payer/repository
 administrator must restore the existing review capability, then obtain a fresh
 exact-head review; settings and review gates are not changed by this task.
 
+## Qualified source revision and remaining gates (2026-10-28)
+
+The repaired **source revision** is
+`bdcb60d96241b9ece6ac15825705c3828763257e`. The following are provider reads,
+not extrapolations from the earlier green revision. A subsequent evidence-only
+ledger commit must receive its own applicable CI; the PR body records that head
+and distinguishes its checks from the source results below.
+
+| Evidence at source revision | Observed result |
+| --- | --- |
+| [Quality 40618269615](https://github.com/CloudHub-Social/Charm/actions/runs/40618269615) | Success; all applicable jobs passed; nightly-failure tracking skipped |
+| Frontend job 122586397284 | Lint, format, typecheck, coverage, knip and build passed; 2,252 tests in 179 files |
+| Coverage | Statements 86.50%, branches 84.59%, functions 80.24%, lines 88.72%; floors preserved |
+| Browser job 122586397358 | 189 passed, 34 existing skips, one flaky timeline-scroll case passed on retry; zero terminal failures |
+| No-capture scroll witness | One passed; separate from the retry above |
+| Compact matrix and actions | All 60 content/layout/width cases passed, plus viewport hit testing, native disclosure, portal, keyboard and context-release journeys |
+| Storybook/axe job 122586397353 | Passed; accessibility rules preserved |
+| Rust, auth/recovery integrations and companion container | Passed, including required Rust aggregate 122593294697 |
+| [iOS 40618269549](https://github.com/CloudHub-Social/Charm/actions/runs/40618269549) | Success; build/simulator evidence, not physical-device acceptance |
+| [CodeQL 40618269582](https://github.com/CloudHub-Social/Charm/actions/runs/40618269582) | Success |
+| [Docs 40618269431](https://github.com/CloudHub-Social/Charm/actions/runs/40618269431) | Build/content/site graph passed; deployment skipped on PR |
+| Feature-doc and visual consumers | All passed; external Snapshot Testing still requests review |
+
+Browser artifact `12786068297` binds these screenshots to CI merge revision
+`dd4474a725f01c0f70ce599ab73c78b677e8b3c4`, run 40618269615, attempt 1.
+Gallery candidate `12786755708` and the current 320px reply/file/rich-content
+captures were inspected. Disposition: intended header spacing and bounded
+out-of-flow actions retained; long reply author wraps, reply preview/file label
+truncate within their own controls, and code/table/math retain their own
+horizontal scrolling. The right-click capture shows Reply only after a separate
+primary click. No unintended row clipping was observed in the inspected states.
+This visual disposition is not an external Sentry snapshot approval, which
+remains explicitly outstanding at snapshot set 120458.
+
+The one flaky browser case is `timeline-scroll.spec.ts:83`: the initial attempt
+did not find the new-message pill, then passed on retry. It is retained and
+reported rather than hidden by a timeout/assertion change. The separate
+no-capture witness also passed. This is a remaining stability observation,
+not an all-first-attempt success claim.
+
+### Finding dispositions and gate reconciliation
+
+All ten GitHub review threads are resolved. Viewport containment, native
+summary and portal findings are fixed in the preserved implementation; duplicate
+Seer/Codex reports share those root causes. Empty IRC spacing is fixed and its
+unit assertion passes. Seer's context-release finding 4396133951 is fixed and
+the real pointer regression passes. Seer's exact-source-head check reports
+**No issues found**, reference 2507870.
+
+Review gate [40618269419](https://github.com/CloudHub-Social/Charm/actions/runs/40618269419)
+failed at 02:20:42Z after observing one unresolved thread. The final IRC thread
+was resolved after that observation; a fresh read showed all ten resolved.
+Only this failed Seer/thread gate was rerun once to reconcile the changed state.
+Attempt 2 completed **successfully** with all threads resolved. The separate
+Codex status below remains independent.
+
+The separate required `codex/review-gate` status at the source head remains
+failure with description **Codex posted 1 finding(s) on current head**, updated
+02:05:52Z, pointing to runner 40618897241. The runner's success is not a clean
+review receipt. The current-head marker 6458617870 was followed by explicit
+code/security payer-quota failures 6458617941 and 6458619961; no clean completion
+has been observed. Thread resolution alone does not establish an independent
+Codex review. The repository/payer administrator owns restoring that capability;
+then the exact current head needs a fresh clean receipt. No purchase, settings
+change, gate bypass or repeated blind review request is performed here.
+
+The current [preview run 40618269454](https://github.com/CloudHub-Social/Charm/actions/runs/40618269454),
+job 122585838343, failed **Verify deployed API proxy** with HTTP 503 at
+02:00:37Z for build `pr601.bdcb60d`. This is freshly read failure evidence,
+not reuse of the historical 503. The companion/R2 stream owns remediation;
+this task does not change its deployment or configuration.
+
+Physical phone/iPad keyboard, long-press, screen-reader, rotation and
+multitasking checks remain **unverified and blocking acceptance**. The owner or
+device tester must supply a genuine current-build record. No merge, deployment,
+release, default-on promotion or physical-device acceptance has occurred here.
+
+### Separate programme custody
+
+The full P0–P12 programme remains outstanding according to its original package
+scope; this ledger neither renumbers it nor closes #539/#526. Coordinator-reported
+package state is kept separate from verified implementation and acceptance:
+
+| Package | Current custody and stage | Integration dependency |
+| --- | --- | --- |
+| P1/P2 | PR #601 executor; repaired source and CI evidence above; external review/preview/device gates remain | Retain message rows/actions/ChatShell, Specs 52/64, gallery and this ledger until explicit release |
+| P3 reaction details | Separate native executor; task started/read work reported; awaiting native tool approvals | Reaction components/tests only; no #601/shared-file edits |
+| P4 voice shell | Separate native executor; task started/read work reported; awaiting native tool approvals | Voice components/tests only; PR #566 Composer wiring excluded |
+| P5 adaptive/tablet layout | Separate native task reported; readiness requires PR #591 ownership reconciliation | Adaptive hook/AppShell scope; shared specs/gallery require serialized integration |
+
+The #601 executor accepts a later **bounded integrator role** only after an
+explicit one-writer release and a separate integration scope. Integration has
+not started, other task claims/approvals remain with their owners, and started
+or approval-waiting tasks are not completed packages. Private task identifiers
+remain in EA tracking, not in published documentation. Remaining profiles,
+primitives, drafts/restart continuity, notification/Activity, recovery,
+threads, calls and platform-polish packages retain their independent gates.
+
 ## Acceptance and remaining work
 
 Implementation is not release or physical-device acceptance. Record current-head
