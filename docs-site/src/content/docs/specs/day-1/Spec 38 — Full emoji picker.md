@@ -122,3 +122,12 @@ None (no Rust/IPC). Pure frontend component swap + a new composer toolbar button
 
 - Sticker tab (day-2 Spec 05).
 - Frequently-used vs recently-used ranking if users want smarter ordering.
+
+## Picker dismissal follow-up (2026-10-27)
+
+The compact fallback and full picker both close after one selection. Radix
+restores focus to the trigger, so the next message action or reaction chip is
+reachable without first dismissing a picker left over the conversation.
+The full-picker feature flag still selects the dataset and browsing surface;
+it does not select a different dismissal contract. Existing account-scoped
+recents, reaction dispatch, composer insertion, and Escape isolation remain.

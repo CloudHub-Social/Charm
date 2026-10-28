@@ -799,7 +799,7 @@ export function ChatShell({
             // enough messages to scroll, it grows to fit its own content
             // instead of owning the remaining chat pane, breaking viewport
             // measurement and potentially pushing the composer offscreen.
-            className={cn("flex-1 p-4", uxRefreshEnabled && "px-3 py-5 sm:px-6")}
+            className="min-w-0 flex-1"
             data={messages}
             firstItemIndex={firstItemIndex}
             initialTopMostItemIndex={messages.length - 1}
@@ -807,7 +807,7 @@ export function ChatShell({
             followOutput="auto"
             startReached={loadMoreHistory}
             atBottomStateChange={handleVirtuosoAtBottomStateChange}
-            context={{ loadingMore, hasMore }}
+            context={{ loadingMore, hasMore, uxRefreshEnabled }}
             components={{ Header: LoadingOlderHeader }}
             // Without this, Virtuoso keys rendered rows by their current
             // position, not identity. A full `timeline:update` snapshot can
@@ -836,7 +836,14 @@ export function ChatShell({
                 before.at(-1)?.timestamp_ms ?? previousMessageTimestamp;
 
               return (
-                <>
+                <div
+                  className={cn(
+                    "min-w-0 px-4",
+                    uxRefreshEnabled && "px-3 sm:px-6",
+                    i === 0 && !loadingMore && hasMore && (uxRefreshEnabled ? "pt-5" : "pt-4"),
+                    i === messages.length - 1 && (uxRefreshEnabled ? "pb-5" : "pb-4"),
+                  )}
+                >
                   {before.length > 0 && (
                     <TimelineNoticeList
                       notices={before}
@@ -881,7 +888,7 @@ export function ChatShell({
                       previousTimestampMs={message.timestamp_ms}
                     />
                   )}
-                </>
+                </div>
               );
             }}
           />

@@ -163,3 +163,14 @@ None — pure frontend layout/CSS. No IPC, no Rust.
 - A dedicated mobile QA pass on the native Tauri iOS/Android builds (this spec's
   reproduction surface is the web build; the `dvh`/safe-area fixes help native too,
   but native has its own status-bar/gesture nuances worth a separate check).
+
+## Conversation-width follow-up (2026-10-27)
+
+PR #601 extends the earlier viewport hardening with message-row geometry
+regressions. Ordinary app, timeline, and message content must fit the viewport;
+code, tables, and other intentionally wide content retain their own bounded
+scroll containers. Gutters belong to measured virtualizer items, not to its
+absolutely positioned viewport. Test all message modes at 320/375/390/430 CSS
+pixels and preserve existing scroll-anchor checks. See the
+[implementation ledger](/operations/ux-recovery/) for evidence and scope.
+Native acceptance remains separate from the browser fixtures.

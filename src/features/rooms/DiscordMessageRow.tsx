@@ -1,3 +1,4 @@
+import { messageActionSurfaceClassName, useMessageActionTouch } from "./messageActionSurface";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useDisplayFormats } from "@/features/appearance/useDisplayFormats";
 import { useMessageSpacing } from "@/features/appearance/messageSpacing";
@@ -65,20 +66,18 @@ export function DiscordMessageRow({
   const showHeader = !sameSenderAsPrev;
   const { clockFormat } = useDisplayFormats();
   const spacingStyle = useMessageSpacing();
+  const touch = useMessageActionTouch(() => getActionsHandle(rowKey));
 
   return (
     <div
       id={`message-${message.event_id}`}
       style={spacingStyle}
       className={cn(
-        "group flex w-full max-w-[48rem] gap-2",
+        "group relative flex min-w-0 w-full max-w-[48rem] gap-2",
         sameSenderAsPrev ? "mt-0.5" : "mt-3",
         isNew && "animate-in fade-in slide-in-from-bottom-2 duration-300 ease-out",
       )}
-      onTouchStart={() => getActionsHandle(rowKey)?.startLongPress()}
-      onTouchEnd={() => getActionsHandle(rowKey)?.cancelLongPress()}
-      onTouchCancel={() => getActionsHandle(rowKey)?.cancelLongPress()}
-      onTouchMove={() => getActionsHandle(rowKey)?.cancelLongPress()}
+      {...touch}
     >
       {showHeader ? (
         onSenderClick ? (
@@ -208,7 +207,7 @@ export function DiscordMessageRow({
               mutationsDisabled={mutationsDisabled}
               isUndecrypted={isUndecrypted}
               isError={isError}
-              className="opacity-0 transition-opacity group-hover:opacity-100 [@media(hover:none)]:opacity-100"
+              className={messageActionSurfaceClassName}
               onReply={onReply}
               onReact={onReact}
               onEdit={onEdit}
