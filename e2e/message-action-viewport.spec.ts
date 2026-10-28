@@ -4,7 +4,7 @@ import { captureSnapshot } from "./support/sentrySnapshot";
 
 const ROOM = { room_id: "!action-viewport:localhost", name: "Action viewport", unread_count: 0 };
 const USER_ID = "@viewport:localhost";
-const longBody = Array.from({ length: 100 }, (_, index) => "Scrollable message line " + index).join(
+const longBody = Array.from({ length: 300 }, (_, index) => "Scrollable message line " + index).join(
   "\n",
 );
 
@@ -152,3 +152,52 @@ for (const input of ["pointer", "touch"] as const) {
     }
   });
 }
+
+test.describe("native touch content", () => {
+  test.use({ hasTouch: true });
+  for (const layout of ["bubble", "discord", "irc"] as const) {
+    test(layout + " preserves native disclosure expansion", async ({ page }) => {
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.addInitScript((messageLayout) => {
+        localStorage.setItem(
+          "charm:featureFlags",
+          JSON.stringify({
+            state: { overrides: { message_action_parity: true, rich_message_rendering: true } },
+            updatedAt: Date.now(),
+          }),
+        );
+        localStorage.setItem(
+          "charm:appearance",
+          JSON.stringify({
+            state: { messageLayout },
+            updatedAt: Date.now(),
+          }),
+        );
+      }, layout);
+      await page.addInitScript(installMockTauri, {
+        userId: USER_ID,
+        deviceId: "DISCLOSURE_TOUCH",
+        room: ROOM,
+        initialMessages: [
+          {
+            ...message("$disclosure", "More detail: Hidden detail"),
+            formatted_body:
+              "<details><summary><span>More detail</span></summary><p>Hidden detail</p></details>",
+          },
+        ],
+      });
+      await page.goto("/");
+      await page.getByRole("button", { name: ROOM.name }).click();
+      const row = page.locator('[id="message-$disclosure"]');
+      const disclosure = row.locator("details");
+      const summary = disclosure.locator("summary span");
+      await expect(disclosure).not.toHaveAttribute("open", "");
+      await summary.tap();
+      await expect(disclosure).toHaveAttribute("open", "");
+      await expect(disclosure.getByText("Hidden detail")).toBeVisible();
+      await expect(row.getByRole("button", { name: "More actions" })).not.toBeFocused();
+      await summary.tap();
+      await expect(disclosure).not.toHaveAttribute("open", "");
+    });
+  }
+});

@@ -13,9 +13,17 @@ function isInteractiveTarget(target: EventTarget | null): boolean {
   return (
     target instanceof Element &&
     target.closest(
-      "a, button, input, textarea, select, audio, video, [contenteditable], [role=button], [role=link], [role=slider]",
+      "a, button, input, textarea, select, summary, audio, video, [contenteditable], [role=button], [role=link], [role=slider]",
     ) !== null
   );
+}
+
+function isMessageTarget(event: {
+  target: EventTarget | null;
+  currentTarget: HTMLDivElement;
+}): boolean {
+  // Portals bubble through React ownership, not through this DOM message row.
+  return event.target instanceof Node && event.currentTarget.contains(event.target);
 }
 
 function hasTextSelection(): boolean {
@@ -36,7 +44,12 @@ export function useMessageActionTouch(getActions: () => MessageActionsHandle | u
 
   function onTouchStart(event: TouchEvent<HTMLDivElement>) {
     cancelTouch();
-    if (event.touches.length !== 1 || isInteractiveTarget(event.target) || hasTextSelection()) {
+    if (
+      !isMessageTarget(event) ||
+      event.touches.length !== 1 ||
+      isInteractiveTarget(event.target) ||
+      hasTextSelection()
+    ) {
       return;
     }
     eligibleTap.current = true;
@@ -46,7 +59,8 @@ export function useMessageActionTouch(getActions: () => MessageActionsHandle | u
   function onTouchEnd(event: TouchEvent<HTMLDivElement>) {
     const reveal = eligibleTap.current;
     cancelTouch();
-    if (!reveal || event.touches.length !== 0 || hasTextSelection()) return;
+    if (!reveal || !isMessageTarget(event) || event.touches.length !== 0 || hasTextSelection())
+      return;
     const trigger = event.currentTarget.querySelector<HTMLButtonElement>(
       '[data-message-actions] button[aria-haspopup="menu"]',
     );
@@ -69,7 +83,13 @@ export function openMessageContextMenu(
   event: MouseEvent<HTMLDivElement>,
   actions: MessageActionsHandle | undefined,
 ): void {
-  if (isInteractiveTarget(event.target) || hasTextSelection() || !actions?.openMenu) return;
+  if (
+    !isMessageTarget(event) ||
+    isInteractiveTarget(event.target) ||
+    hasTextSelection() ||
+    !actions?.openMenu
+  )
+    return;
   event.preventDefault();
   actions.openMenu();
 }

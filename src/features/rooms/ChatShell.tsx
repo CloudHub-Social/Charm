@@ -807,7 +807,7 @@ export function ChatShell({
             followOutput="auto"
             startReached={loadMoreHistory}
             atBottomStateChange={handleVirtuosoAtBottomStateChange}
-            context={{ loadingMore, hasMore }}
+            context={{ loadingMore, hasMore, uxRefreshEnabled }}
             components={{ Header: LoadingOlderHeader }}
             // Without this, Virtuoso keys rendered rows by their current
             // position, not identity. A full `timeline:update` snapshot can
@@ -840,7 +840,7 @@ export function ChatShell({
                   className={cn(
                     "min-w-0 px-4",
                     uxRefreshEnabled && "px-3 sm:px-6",
-                    i === 0 && (uxRefreshEnabled ? "pt-5" : "pt-4"),
+                    i === 0 && !loadingMore && hasMore && (uxRefreshEnabled ? "pt-5" : "pt-4"),
                     i === messages.length - 1 && (uxRefreshEnabled ? "pb-5" : "pb-4"),
                   )}
                 >

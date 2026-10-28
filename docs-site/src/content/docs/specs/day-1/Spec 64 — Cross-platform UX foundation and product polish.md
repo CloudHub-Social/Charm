@@ -292,6 +292,12 @@ surface; inactive virtualized rows do not each subscribe to scroll events.
 The existing Radix menu, focus restoration, and gesture safeguards remain
 the owners of interaction, rather than introducing a second action system.
 
+Native disclosure controls and events originating in portalled content keep
+their own interaction and focus behavior. Message-tap handlers apply only to
+prose inside the actual DOM row. Loading/caught-up headers use the same
+legacy or refreshed gutters as message items; top padding is owned by the
+header when present, otherwise by the first item, never both.
+
 Timeline gutters are measured item content. Bubbles retain their saved visual
 mode, and IRC reactions use the next line instead of crowding sender and text.
 These repairs do not promote the refresh flag or complete composer/tablet work.

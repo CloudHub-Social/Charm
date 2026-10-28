@@ -80,8 +80,10 @@ Review comment 4395287876 identified that the above-row toolbar can be
 clipped at the timeline top or when the start of a tall message has scrolled
 out of view. Test-only head c7c6ed6cdf5f74a6582593f52c57e414bfe1d7af,
 in [Quality run 40603216306](https://github.com/CloudHub-Social/Charm/actions/runs/40603216306),
-reproduced 12 pointer/touch boundary failures while the 126 existing browser
-cases passed. The initial fixture iteration was corrected for signed-zero
+reproduced boundary failures while the 126 existing browser cases passed.
+Ten cases demonstrated actual clipping; two IRC tall-message fixtures were
+subsequently enlarged because IRC collapses newlines and the original body
+was not consistently taller than the viewport. The initial fixture iteration was corrected for signed-zero
 scroll coordinates and input capability before relying on that evidence.
 
 A shared positioning hook now owns timeline/visual-viewport containment for
@@ -94,6 +96,21 @@ Eight gallery images changed by the earlier geometry repair were visually
 reviewed and copied from the CI-produced feature-docs candidate for 5c2db696.
 The feature-docs comparison thresholds are unchanged, and no gallery build
 or browser checks were run locally on the owner's Mac.
+
+## Native-content and header review follow-up
+
+Test-only head 5d25a1c4bd952a44cf8b7fca35efb005163a38e6, in
+[Quality run 40605792376](https://github.com/CloudHub-Social/Charm/actions/runs/40605792376),
+had 2,243 passing unit tests and four expected failures: native summary and
+React-portal touches were consumed, and both header states lacked gutters.
+The repair excludes native disclosure controls and out-of-row portal targets
+from message gestures, and restores header-owned padding without doubling
+first-item spacing. Browser cases also exercise real disclosure taps in all
+three layouts, in addition to pointer/touch scroll-boundary placement.
+
+The formatter available in the shared checkout was 0.61.0, while this branch
+pins 0.71.0. Explicit file edits now use the pinned formatter in write mode;
+project manifests and lockfiles are unchanged and checks still run in CI.
 
 ## Acceptance and remaining work
 
