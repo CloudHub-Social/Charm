@@ -11,11 +11,35 @@ spec.loader.exec_module(module)
 
 class CutoverTest(unittest.TestCase):
     def valid(self):
-        return {"active_deployment": {"spec": {"maintenance": {"archive": True}, "services": [{"name": "api", "instance_count": 1}]}},
+        return {"active_deployment": {"phase": "ACTIVE", "spec": {"maintenance": {"archive": True}, "services": [{"name": "api", "instance_count": 1}]}},
                 "spec": {"services": [{"instance_count": 1}]}}
 
     def test_archived_without_instances(self):
         module.validate(self.valid(), [])
+
+    def test_archived_maintenance_only_spec_and_nil_instance_slice(self):
+        app = self.valid()
+        app["active_deployment"]["spec"].pop("services")
+        module.validate(app, None)
+        module.validate(app, [])
+        for unknown in [{}, "", 0]:
+            with self.assertRaises(ValueError):
+                module.validate(app, unknown)
+        app["active_deployment"]["phase"] = "BUILDING"
+        with self.assertRaises(ValueError):
+            module.validate(app, None)
+
+    def test_in_progress_deployment_rejected(self):
+        app = self.valid()
+        app["in_progress_deployment"] = {"id": "synthetic"}
+        with self.assertRaises(ValueError):
+            module.validate(app, [])
+
+    def test_empty_retained_service_configuration_rejected(self):
+        app = self.valid()
+        app["spec"]["services"] = []
+        with self.assertRaises(ValueError):
+            module.validate(app, [])
 
     def test_live_source_rejected(self):
         app = self.valid()
