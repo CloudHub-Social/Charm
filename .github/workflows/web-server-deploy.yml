@@ -106,7 +106,7 @@ jobs:
           # Initial cross-provider authority change requires a stopped source.
           # This reads metadata only and fails before the one update request.
           if python3 -c 'import sys,yaml; s=yaml.safe_load(open(sys.argv[1])); sys.exit(0 if any(e.get("key")=="CHARM_WEB_SERVER_STATE_CUTOVER_SHA" and e.get("value")==sys.argv[2] for c in s.get("services",[]) for e in c.get("envs",[])) else 1)' /tmp/merged-spec.yaml "$GITHUB_SHA"; then
-            python3 scripts/verify-state-cutover.py "$DO_APP_ID"
+            python3 scripts/verify-state-cutover.py "$DO_APP_ID" "$GITHUB_SHA"
           fi
           # Updating the spec requests the rollout itself. Do not follow it
           # with create-deployment or retry an uncertain provider response.

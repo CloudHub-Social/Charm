@@ -1341,6 +1341,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn split_state_fences_only_in_coordination_store() {
+        let snapshots: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let coordination: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let mut writer = CryptoBackupStore::new_for_test_with_store(
+            [43; 32], "r2-writer", Arc::clone(&snapshots), true,
+        );
+        writer.coordination = Some(Arc::clone(&coordination));
+        writer.activate_writer().await.unwrap();
+        writer.commit_writer().await.unwrap();
+        writer.acquire_recovery_mutation("request").await.unwrap();
+        writer.renew_recovery_mutation("request").await.unwrap();
+        writer.release_recovery_mutation("request").await.unwrap();
+        assert!(coordination.head(&ObjectPath::from(ACTIVE_WRITER_PATH)).await.is_ok());
+        assert!(matches!(snapshots.head(&ObjectPath::from(ACTIVE_WRITER_PATH)).await,
+            Err(object_store::Error::NotFound { .. })));
+    }
+
+    #[tokio::test]
     async fn writer_is_inactive_until_startup_activates_it() {
         let backend: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
         let writer = CryptoBackupStore::new_for_test_with_store(

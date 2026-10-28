@@ -2001,11 +2001,9 @@ impl PersistenceStore {
     /// its now-invalid tokens — logged and treated as a no-op, the same
     /// outcome as if this call had lost the race to acquire the in-process
     /// lock in the first place. Falls back to a plain unconditional `put`
-    /// only when the backend reports `NotImplemented` for conditional
-    /// writes (`LocalFileSystem`, used for local dev and every test in this
-    /// module — DO Spaces, the only backend this crate actually deploys
-    /// with multiple instances against, does support it), preserving
-    /// today's in-process-only protection there rather than failing outright.
+    /// only for an explicitly local backend reporting `NotImplemented`.
+    /// Production object storage fails closed: S3 compatibility alone does not
+    /// establish atomic conditional-write support.
     ///
     /// `Ok(TouchOutcome::NotFound)`, not an error, if the entry was removed
     /// by a racing logout before this could even acquire the lock or read

@@ -36,3 +36,14 @@ class CutoverTest(unittest.TestCase):
         app["spec"]["workers"] = [{"name": "synthetic"}]
         with self.assertRaises(ValueError):
             module.validate(app, [])
+
+    def test_completed_same_revision_restart(self):
+        app = self.valid()
+        app["active_deployment"] = {"phase": "ACTIVE", "spec": {"services": [{
+            "instance_count": 1, "envs": [
+                {"key": "CHARM_WEB_SERVER_STATE_BUCKET", "value": "charm-api-state-production"},
+                {"key": "CHARM_WEB_SERVER_EXPECTED_SOURCE_SHA", "value": "qualified"},
+                {"key": "CHARM_WEB_SERVER_STATE_CUTOVER_SHA", "value": "qualified"}]}]}}
+        module.validate(app, [{"id": "synthetic"}], "qualified")
+        with self.assertRaises(ValueError):
+            module.validate(app, [{"id": "synthetic"}], "different")

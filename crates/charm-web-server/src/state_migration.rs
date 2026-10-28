@@ -51,9 +51,15 @@ async fn read_optional(store: &dyn ObjectStore, path: &Path) -> Result<Option<Ve
         Err(_) => return Err("state read failed".into()),
     };
     if result.meta.size > MAX_OBJECT_BYTES { return Err("state object exceeds copy bound".into()); }
-    let bytes = result.bytes().await.map_err(|_| "state body read failed")?;
-    if bytes.len() as u64 > MAX_OBJECT_BYTES { return Err("state body exceeds copy bound".into()); }
-    Ok(Some(bytes.to_vec()))
+    let mut stream = result.into_stream();
+    let mut bytes = Vec::new();
+    while let Some(chunk) = stream.try_next().await.map_err(|_| "state body read failed")? {
+        if bytes.len() as u64 + chunk.len() as u64 > MAX_OBJECT_BYTES {
+            return Err("state body exceeds copy bound".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(Some(bytes))
 }
 
 async fn copy_exact(destination: &dyn ObjectStore, path: &Path, bytes: &[u8]) -> Result<(), String> {
