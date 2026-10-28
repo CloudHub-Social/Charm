@@ -44,7 +44,12 @@ for (const touch of [false, true]) {
         );
         await expect(editor).toHaveAttribute("data-adaptive-owner", "retained");
         await expect(editor).toContainText("Synthetic draft survives resize");
-        await expect(page.getByRole("navigation", { name: "Primary" })).toHaveCount(0);
+        await expect(page.getByRole("navigation", { name: "Primary", exact: true })).toHaveCount(0);
+        if (width >= 768) {
+          await expect(
+            page.getByRole("navigation", { name: "Primary navigation", exact: true }),
+          ).toBeVisible();
+        }
         if (width >= 768) {
           await page.getByRole("button", { name: "Show members" }).click();
           await expect(page.getByRole("heading", { name: "Members" })).toBeVisible();
@@ -63,7 +68,7 @@ for (const touch of [false, true]) {
       const back = page.getByRole("button", { name: "Back to chats" });
       await back.focus();
       await page.keyboard.press("Enter");
-      await expect(page.getByRole("navigation", { name: "Primary" })).toBeVisible();
+      await expect(page.getByRole("navigation", { name: "Primary", exact: true })).toBeVisible();
       await page.getByRole("button", { name: /Adaptive fixture/i }).click();
       await expect(editor).toContainText("Synthetic draft survives resize");
       await expect(editor).toHaveAttribute("data-adaptive-owner", "retained");

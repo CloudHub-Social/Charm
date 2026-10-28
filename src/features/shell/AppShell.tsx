@@ -91,7 +91,7 @@ export function AppShell({
   const { preferences, setRoomSidebarWidth } = usePanePreferences();
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   const contentRef = useRef<HTMLDivElement>(null);
-  const contextRef = useRef<HTMLDivElement>(null);
+  const contextRef = useRef<HTMLElement>(null);
   const contextReturnFocus = useRef<HTMLElement | null>(null);
   const [mobileDragX, setMobileDragX] = useState(0);
   const [mobileDragging, setMobileDragging] = useState(false);
@@ -260,10 +260,9 @@ export function AppShell({
         !showingActivity &&
         rightPanel &&
         (uxRefreshEnabled ? (
-          <div
+          <section
             ref={contextRef}
             tabIndex={-1}
-            role="region"
             aria-label="Room context"
             className={cn(
               "z-30 h-full min-w-0 [&>div]:h-full",
@@ -271,7 +270,7 @@ export function AppShell({
             )}
           >
             {rightPanel}
-          </div>
+          </section>
         ) : (
           rightPanel
         ))}
