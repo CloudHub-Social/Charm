@@ -187,8 +187,9 @@ test.describe("native touch content", () => {
         ],
       });
       await page.goto("/");
-      await page.getByRole("button", { name: ROOM.name }).click();
+      // The compact mock session already opens its selected room.
       const row = page.locator('[id="message-$disclosure"]');
+      await expect(row).toBeVisible();
       const disclosure = row.locator("details");
       const summary = disclosure.locator("summary span");
       await expect(disclosure).not.toHaveAttribute("open", "");
