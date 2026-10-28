@@ -75,28 +75,28 @@ export function WhoReactedDialog({
             )}
           </div>
         ) : (
-          <ScrollArea.Root type="auto" className="relative overflow-hidden">
-            <ScrollArea.Viewport
-              tabIndex={0}
-              role="region"
-              aria-label="Reactors"
-              className="max-h-80 w-full rounded-[inherit] focus-visible:outline focus-visible:outline-ring"
-            >
-              <ul className="flex flex-col gap-1 text-sm">
-                {details.map((detail) => (
-                  <li
-                    key={`${detail.sender}-${detail.origin_server_ts}`}
-                    className="min-w-0 break-all"
-                  >
-                    {detail.sender}
-                  </li>
-                ))}
-              </ul>
-            </ScrollArea.Viewport>
-            <ScrollArea.Scrollbar orientation="vertical" className="flex w-2 p-px">
-              <ScrollArea.Thumb className="relative flex-1 rounded-full bg-border" />
-            </ScrollArea.Scrollbar>
-          </ScrollArea.Root>
+          <section aria-label="Reactors">
+            <ScrollArea.Root type="auto" className="relative overflow-hidden">
+              <ScrollArea.Viewport
+                tabIndex={0}
+                className="max-h-80 w-full rounded-[inherit] focus-visible:outline focus-visible:outline-ring"
+              >
+                <ul className="flex flex-col gap-1 text-sm">
+                  {details.map((detail) => (
+                    <li
+                      key={`${detail.sender}-${detail.origin_server_ts}`}
+                      className="min-w-0 break-all"
+                    >
+                      {detail.sender}
+                    </li>
+                  ))}
+                </ul>
+              </ScrollArea.Viewport>
+              <ScrollArea.Scrollbar orientation="vertical" className="flex w-2 p-px">
+                <ScrollArea.Thumb className="relative flex-1 rounded-full bg-border" />
+              </ScrollArea.Scrollbar>
+            </ScrollArea.Root>
+          </section>
         )}
         <DialogClose asChild>
           <Button type="button" variant="ghost" className="min-h-11 min-w-11 justify-self-end">
