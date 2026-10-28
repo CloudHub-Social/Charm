@@ -424,6 +424,46 @@ owner under coordinator receipt 6469710280. Snapshot set 120728 describes the ol
 and applicable approval. Codex remains owner-waived, not passed. No backend,
 RoomsScreen, Spec52, Composer or other package files change in this repair.
 
+### Control-click release follow-up
+
+Substantive finding [4401034714](https://github.com/CloudHub-Social/Charm/pull/601#discussion_r4401034714)
+identified that macOS Control-click opens the same menu with primary button 0,
+but the existing release guard only protected non-primary buttons. Test-only
+`cc1c25d9a68774d666c2448803bb29a426eb735d`,
+[Quality 40695765229](https://github.com/CloudHub-Social/Charm/actions/runs/40695765229),
+browser job 122844547083 independently reproduced unintended Reply selection on
+release: 192 passed, one regression failed on all three attempts, 34 existing
+skips. The initial unit test did not run because its role-query option failed
+type checking; the query is corrected without changing its assertions. An
+advisory-service warning in that job was not the typecheck failure.
+
+The existing menu release guard now also prevents Control-click's opening
+release from selecting an action. The browser regression retains real Control
+pointer down/up, simulating only macOS's context event on Linux. It requires no
+reply on release and a working subsequent ordinary Reply click. No action
+permission or menu-item semantics changed. Fresh repair-head CI remains required;
+this is not a native macOS acceptance claim.
+
+Selection repair predecessor `a39ae19c1b267584591adce45ae51d0ea08462fb` passed
+frontend and Storybook/axe plus browser job 122841544922 in
+[Quality 40695052583](https://github.com/CloudHub-Social/Charm/actions/runs/40695052583):
+192 passed, 34 skipped and one separate no-capture scroll witness passed. That
+includes injected automatic-word selection and deliberate-selection preservation.
+Inspected Storybook artifact 12819122381 and browser artifact 12819761572
+(receipt merge SHA `d70c441ce88dd5463733ed093bb6d3bc38fc9db9`): bounded rows and
+IRC rich content retained; selected word remains visible with the action surface;
+ordinary explicit Reply opens its composer. These are visual dispositions, not
+external snapshot approvals. The provider marked thread PRRT_kwDOTNc8Es6xHZd7
+resolved in `92e4c51a`; the Control-click finding is separately accounted.
+
+At `a39ae19c`, preview run 40695052394/job 122839572948 deployed the Worker but
+failed API-proxy verification with HTTP503 at 13:18:27Z, build `pr601.a39ae19`.
+The existing #606 route 6469710280 remains in force. This predecessor failure is
+not inherited as the new head's result. The exact new head requires CI, snapshot
+approval and native/device evidence separately. Codex remains owner-waived, never
+passed. Serial integration file-release conditions and #566/#591/#606 custody
+are unchanged; no shared wiring or merge is authorized by this repair evidence.
+
 ## Acceptance and remaining work
 
 Implementation is not release or physical-device acceptance. Record current-head

@@ -54,7 +54,7 @@ describe("MessageActions", () => {
   it("does not select an action on the opening Control-click release", async () => {
     const { onReply } = renderActions();
     openMenu();
-    const reply = await screen.findByRole("menuitem", { name: "Reply", exact: true });
+    const reply = await screen.findByRole("menuitem", { name: /^Reply$/ });
     expect(fireEvent.pointerUp(reply, { button: 0, ctrlKey: true, pointerType: "mouse" })).toBe(
       false,
     );

@@ -337,8 +337,9 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
             align="end"
             onPointerUpCapture={(event) => {
               // Radix can synthesize a click for a release whose press began
-              // outside the menu. The opening right-click must not select an item.
-              if (event.button !== 0) event.preventDefault();
+              // outside the menu. Right-click and macOS Control-click releases
+              // must not select an item merely by opening the menu.
+              if (event.button !== 0 || event.ctrlKey) event.preventDefault();
             }}
           >
             {!isRedacted && (
