@@ -156,6 +156,9 @@ export const TouchPreview: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const mic = canvas.getByRole("button", { name: "Record voice message" });
+    // userEvent emits synthetic pointers, which have no native capture ID.
+    // Real pointer capture/permission-sheet behavior needs physical-device acceptance.
+    Object.defineProperty(mic, "setPointerCapture", { value: () => {} });
     await userEvent.pointer([{ keys: "[TouchA>]", target: mic }, { keys: "[/TouchA]" }]);
     await expect(await canvas.findByRole("button", { name: "Send voice message" })).toBeEnabled();
     await expect(canvas.getByRole("textbox")).toHaveValue("A private, unsent draft");
