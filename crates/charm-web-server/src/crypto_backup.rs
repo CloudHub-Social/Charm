@@ -277,6 +277,9 @@ impl CryptoBackupStore {
     pub async fn from_env() -> Result<Option<Self>, String> {
         let bucket = match std::env::var(BUCKET_ENV) {
             Ok(bucket) if !bucket.trim().is_empty() => bucket,
+            _ if crate::state_storage::configured() => {
+                return Err("R2 state requires the existing encrypted snapshot backend".into());
+            }
             _ => return Ok(None),
         };
         let key = load_backup_key().await?;
@@ -1338,6 +1341,24 @@ mod tests {
         )
         .is_ok());
         assert!(validate_manifest_files(&[], &DATABASE_FILES).is_err());
+    }
+
+    #[tokio::test]
+    async fn r2_state_cannot_disable_snapshot_protection() {
+        let _guard = crate::ENV_TEST_LOCK.lock().await;
+        let state_name = "CHARM_WEB_SERVER_STATE_BUCKET";
+        let old_state = std::env::var_os(state_name);
+        let old_crypto = std::env::var_os(BUCKET_ENV);
+        std::env::set_var(state_name, "charm-api-state-production");
+        std::env::remove_var(BUCKET_ENV);
+        let result = CryptoBackupStore::from_env().await;
+        for (name, old) in [(state_name, old_state), (BUCKET_ENV, old_crypto)] {
+            match old {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+        assert!(result.is_err());
     }
 
     #[tokio::test]

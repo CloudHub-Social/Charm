@@ -6,7 +6,9 @@ use sha2::{Digest, Sha256};
 
 const MARKER: &str = "control/state-migration-v1";
 const FENCE: &str = "control/active-writer";
-const MAX_OBJECTS: usize = 1000;
+// The approved traffic estimate assumes at most ten active source sessions.
+// Count all source records conservatively; never decrypt to guess activity.
+const MAX_OBJECTS: usize = 10;
 const MAX_OBJECT_BYTES: u64 = 1024 * 1024;
 const MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -127,7 +129,7 @@ pub async fn migrate(
         return Err("source state changed during stopped-writer migration".into());
     }
     let receipt = Receipt { version: 1, objects: before.len() + usize::from(fence.is_some()), bytes: total,
-        digest: format!("{:x}", digest.finalize()) };
+        digest: digest.finalize().iter().map(|byte| format!("{byte:02x}")).collect() };
     let bytes = serde_json::to_vec(&receipt).map_err(|_| "state receipt encoding failed")?;
     copy_exact(destination, &marker, &bytes).await?;
     tracing::info!(objects = receipt.objects, bytes = receipt.bytes, "state migration verified; R2 is authoritative");
@@ -162,6 +164,18 @@ mod tests {
         assert!(read_optional(&destination, &Path::from(MARKER)).await.unwrap().is_none());
         destination.put(&path, b"ciphertext".to_vec().into()).await.unwrap();
         migrate(&source, &crypto, &destination).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rejects_source_population_above_budget_before_copy() {
+        let source = InMemory::new(); let crypto = InMemory::new(); let destination = InMemory::new();
+        for index in 0..=MAX_OBJECTS {
+            let path = Path::from(format!("sessions/{index:064x}.json"));
+            source.put(&path, b"ciphertext".to_vec().into()).await.unwrap();
+        }
+        assert!(migrate(&source, &crypto, &destination).await.is_err());
+        assert!(inventory(&destination).await.unwrap().is_empty());
+        assert!(!completed(&destination).await.unwrap());
     }
 
     #[tokio::test]

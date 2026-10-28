@@ -294,7 +294,7 @@ copies opaque session ciphertext and the writer fence before starting any listen
 sweeper or writer. It preserves exact object paths (required by authenticated
 encryption), verifies bytes, and rechecks the source inventory. Source objects are
 never deleted or rewritten. Conflicting destination bytes halt migration. Copies
-are bounded to 1,000 sessions, 1 MiB/object and 64 MiB total session data. Exceeding
+are bounded to ten sessions (the budget-estimate population), 1 MiB/object and 64 MiB total session data. Exceeding
 these bounds requires a separately reviewed sizing decision; do not raise them
 silently. R2/source migration client transport retries are disabled; interrupted
 copies can resume only against identical destination bytes.
