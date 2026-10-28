@@ -35,6 +35,23 @@ for (const touch of [false, true]) {
       await editor.evaluate((node) => {
         node.setAttribute("data-adaptive-owner", "retained");
       });
+      // Keep context open across the breakpoint: focus must stay on the
+      // same control, rather than jumping back to chat or to the wrapper.
+      await page.setViewportSize({ width: 1199, height: 900 });
+      const showMembers = page.getByRole("button", { name: "Show members" });
+      await showMembers.click();
+      const closeMembers = page.getByRole("button", { name: "Close members" });
+      await closeMembers.focus();
+      await page.setViewportSize({ width: 1200, height: 900 });
+      await expect(closeMembers).toBeFocused();
+      const memberSearch = page.getByPlaceholder("Search members");
+      await memberSearch.fill("synthetic search");
+      await page.setViewportSize({ width: 1199, height: 900 });
+      await expect(memberSearch).toBeFocused();
+      await expect(memberSearch).toHaveValue("synthetic search");
+      await closeMembers.click();
+      await expect(showMembers).toBeFocused();
+
       for (const width of [1199, 1200, 768, 834, 1024, 767, 390, 1440]) {
         await page.setViewportSize({ width, height: 900 });
         const shell = page.locator("[data-layout-width]");
