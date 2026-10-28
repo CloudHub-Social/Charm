@@ -169,7 +169,7 @@ export function IrcMessageRow({
           </>
         )}
       </div>
-      {!message.redacted && (
+      {!message.redacted && message.reactions.length > 0 && (
         <div className="min-w-0 basis-full">
           <ReactionBar
             accountId={currentUserId ?? ""}

@@ -112,6 +112,49 @@ The formatter available in the shared checkout was 0.61.0, while this branch
 pins 0.71.0. Explicit file edits now use the pinned formatter in write mode;
 project manifests and lockfiles are unchanged and checks still run in CI.
 
+## Owner handoff continuation (2026-10-28)
+
+Owner handoff `handoff_4a9cdc50fd81029efedfb8e2aaa52821af8d84195458c009cd025ab5882bbc00`
+was manually claimed before edits. The existing branch and implementation were
+preserved. At pickup head `9b386d5db08c5eafe79c2c159ded60f46a40be5c`,
+[Quality run 40607622509](https://github.com/CloudHub-Social/Charm/actions/runs/40607622509)
+recorded 2,251 passing unit tests and one failing IRC empty-reaction-wrapper
+assertion. This was a unit failure, not a coverage-threshold failure. The repair
+now omits that wrapper when reactions are absent, retaining the regression test.
+
+The compact browser matrix extends Bubble/Modern/IRC at 320/375/390/430px to
+rich URLs/code/tables/math, long replies, failed local echoes and file labels.
+It checks row and ancestor bounds through the virtualized item, timeline, pane
+and shell, and tests that explicit code/table/math scroll owners retain access
+to wide content. Existing pointer/touch/keyboard and complete message journeys
+remain in place. These additions require fresh CI; source assertions alone do
+not establish that the expanded matrix passes.
+
+Six gallery candidates from that run were visually inspected before copying:
+rich-message-rendering, link-previews, message-actions, media-attachments,
+timeline-state-events and ux-refresh-navigation-rail. The restored caught-up
+header spacing is intentional; the toolbar is outside prose and the reviewed
+candidates show no clipped content. Source artifact `12781717289` is
+`feature-docs-candidate-601-attempt-1`; browser artifact `12782031822` includes
+its capture receipt for CI merge revision `ce31305f9118496712cc429825cf44d7ef1266f9`.
+These images qualify only that captured revision. Screenshot thresholds remain
+unchanged. New-head comparison and visual review remain required.
+
+The pickup revision's browser, Storybook/axe, Rust and iOS build/simulator jobs
+passed, while feature-doc comparisons and four unresolved review threads blocked
+qualification. The web preview returned HTTP 503 from its API proxy in
+[run 40607622189](https://github.com/CloudHub-Social/Charm/actions/runs/40607622189).
+That service dependency is outside this geometry repair; no deployment or API
+configuration change is authorized here. Current-head outcomes are recorded in
+PR #601 and the same handoff, separately from historical evidence.
+
+The original research PDF was not delivered to this executor. This continuation
+uses the handoff's preserved requirements and repository Specs 27/37/38/41/52/64;
+it does not claim to have read the attachment. Physical iPhone/iPad keyboard,
+long-press, screen-reader, rotation and multitasking acceptance remains blocked
+pending a genuine current-build device record from the owner/tester. No merge,
+release or flag promotion is implied.
+
 ## Acceptance and remaining work
 
 Implementation is not release or physical-device acceptance. Record current-head
