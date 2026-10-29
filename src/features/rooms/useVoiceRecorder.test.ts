@@ -160,7 +160,7 @@ describe("useVoiceRecorder", () => {
     );
     const focus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
     const { result } = renderHook(() => useVoiceRecorder());
-    let starting!: Promise<void>;
+    let starting!: Promise<boolean>;
     act(() => {
       starting = result.current.start();
     });
@@ -187,7 +187,7 @@ describe("useVoiceRecorder", () => {
         }),
     );
     const { result } = renderHook(() => useVoiceRecorder());
-    let starting!: Promise<void>;
+    let starting!: Promise<boolean>;
     act(() => {
       starting = result.current.start();
     });
@@ -286,7 +286,7 @@ describe("useVoiceRecorder", () => {
         }),
     );
     const { result } = renderHook(() => useVoiceRecorder());
-    let starting!: Promise<void>;
+    let starting!: Promise<boolean>;
     act(() => {
       starting = result.current.start();
     });
@@ -312,7 +312,7 @@ describe("useVoiceRecorder", () => {
     );
     const { result } = renderHook(() => useVoiceRecorder());
     const stopFromIdleRender = result.current.stop;
-    let starting!: Promise<void>;
+    let starting!: Promise<boolean>;
     act(() => {
       starting = result.current.start();
       stopFromIdleRender();
@@ -357,7 +357,7 @@ describe("useVoiceRecorder", () => {
         }),
     );
     const { result, unmount } = renderHook(() => useVoiceRecorder());
-    let starting!: Promise<void>;
+    let starting!: Promise<boolean>;
     act(() => {
       starting = result.current.start();
     });
@@ -392,7 +392,7 @@ describe("useVoiceRecorder", () => {
         }),
     );
     const { result } = renderHook(() => useVoiceRecorder());
-    let starting!: Promise<void>;
+    let starting!: Promise<boolean>;
     act(() => {
       starting = result.current.start();
     });
@@ -426,7 +426,7 @@ describe("useVoiceRecorder", () => {
         }),
     );
     const { result } = renderHook(() => useVoiceRecorder());
-    let starting!: Promise<void>;
+    let starting!: Promise<boolean>;
     act(() => {
       starting = result.current.start();
     });
@@ -495,7 +495,7 @@ describe("useVoiceRecorder", () => {
     );
     const { result } = renderHook(() => useVoiceRecorder());
     const start = result.current.start;
-    let first!: Promise<void>;
+    let first!: Promise<boolean>;
     act(() => {
       first = start();
       void start();

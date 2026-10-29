@@ -146,12 +146,16 @@ for (const layout of ["bubble", "discord", "irc"]) {
         await expect(chip).toHaveAttribute("aria-pressed", "true");
 
         // A simulated touch hold followed by its compatibility click only views.
+        // Retain the real gesture origin before Radix hides the background
+        // from role queries. Touch release still belongs to that DOM node.
+        const gestureOrigin = await chip.elementHandle();
+        expect(gestureOrigin).not.toBeNull();
         await chip.dispatchEvent("touchstart", {
           touches: [{ identifier: 1, clientX: 1, clientY: 1 }],
         });
         await expect(dialog).toBeVisible();
-        await chip.dispatchEvent("touchend", { touches: [] });
-        await chip.dispatchEvent("click");
+        await gestureOrigin!.dispatchEvent("touchend", { touches: [] });
+        await gestureOrigin!.dispatchEvent("click");
         await expect(dialog).toBeVisible();
         await dialog.getByRole("button", { name: "Close", exact: true }).click();
         await expect(chip).toHaveAttribute("aria-pressed", "true");

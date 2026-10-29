@@ -12,8 +12,8 @@ sidebar:
 
 ### Post-CI P5 integration — qualification pending
 
-The refreshed model separates compact (<768px), medium (768–1199px) and wide
-(>=1200px) from pointer/hover capability. Under default-off `ux_refresh_v1`,
+The refreshed model separates compact (`<768px`), medium (`768–1199px`) and wide
+(`>=1200px`) from pointer/hover capability. Under default-off `ux_refresh_v1`,
 compact pushes conversation detail with Back and hides root tabs, medium context
 replaces chat, and wide context remains optional beside chat. Editor, draft,
 scroll and media owners remain mounted across width changes. Focus stays within
