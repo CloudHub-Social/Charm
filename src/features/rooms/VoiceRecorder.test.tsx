@@ -24,15 +24,10 @@ describe("VoiceRecorder", () => {
     capture.preview = null;
     render(<VoiceRecorder mobile={false} onSend={vi.fn()} onClearFailedUpload={vi.fn()} />);
     const start = screen.getByRole("button", { name: "Record voice message" });
-    fireEvent.pointerDown(start, {
-      button: 0,
-      isPrimary: true,
-      pointerType: "touch",
-      pointerId: 7,
-      clientX: 120,
-    });
+    Object.defineProperty(start, "setPointerCapture", { value: vi.fn() });
+    pointerEvent(start, "pointerdown", { pointerId: 7, clientX: 120 });
     expect(capture.start).toHaveBeenCalledOnce();
-    fireEvent.pointerUp(start, { pointerType: "touch", pointerId: 7 });
+    pointerEvent(start, "pointerup", { pointerId: 7 });
     expect(capture.stop).toHaveBeenCalledOnce();
     fireEvent.click(start, { detail: 1 });
     expect(capture.start).toHaveBeenCalledOnce();
