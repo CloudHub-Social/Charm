@@ -99,6 +99,7 @@ const sendReply = vi.fn().mockResolvedValue("txn-1");
 const editMessage = vi.fn().mockResolvedValue(undefined);
 const redactEvent = vi.fn().mockResolvedValue(undefined);
 const toggleReaction = vi.fn<(...args: unknown[]) => Promise<ReactionToggleResult>>();
+const getReactionDetails = vi.fn();
 const resendMessage = vi.fn().mockResolvedValue(undefined);
 const discardFailedMessage = vi.fn().mockResolvedValue(true);
 const setRoomSendQueueReadOnly = vi.fn().mockResolvedValue(0);
@@ -248,6 +249,7 @@ vi.mock("@/lib/matrix", () => ({
   editMessage: (...args: unknown[]) => editMessage(...args),
   redactEvent: (...args: unknown[]) => redactEvent(...args),
   toggleReaction: (...args: unknown[]) => toggleReaction(...args),
+  getReactionDetails: (...args: unknown[]) => getReactionDetails(...args),
   resendMessage: (...args: unknown[]) => resendMessage(...args),
   discardFailedMessage: (...args: unknown[]) => discardFailedMessage(...args),
   setRoomSendQueueReadOnly: (...args: unknown[]) => setRoomSendQueueReadOnly(...args),
@@ -454,6 +456,9 @@ describe("ChatShell", () => {
     redactEvent.mockReset().mockResolvedValue(undefined);
     canRedactOthers.mockReset().mockResolvedValue(true);
     toggleReaction.mockReset();
+    getReactionDetails
+      .mockReset()
+      .mockResolvedValue([{ sender: "@alice:localhost", origin_server_ts: 1 }]);
     resendMessage.mockReset().mockResolvedValue(undefined);
     discardFailedMessage.mockReset().mockResolvedValue(true);
     setRoomSendQueueReadOnly.mockReset().mockResolvedValue(0);
@@ -637,7 +642,7 @@ describe("ChatShell", () => {
     expect(screen.queryByTestId("composer-shell")).not.toBeInTheDocument();
   });
 
-  it("disables server-mutating message actions in a tombstoned room", async () => {
+  it("blocks tombstoned message mutations while retaining read-only reaction details", async () => {
     getRoomDetails.mockResolvedValue({
       room_id: room.room_id,
       is_encrypted: false,
@@ -670,8 +675,14 @@ describe("ChatShell", () => {
     );
 
     const reaction = await screen.findByRole("button", { name: /👍/, pressed: false });
-    expect(reaction).toBeDisabled();
+    expect(reaction).toBeEnabled();
+    expect(reaction).toHaveAccessibleName("View 1 reactors for 👍");
     fireEvent.click(reaction);
+    expect(await screen.findByRole("dialog")).toBeVisible();
+    expect(getReactionDetails).toHaveBeenCalledWith(room.room_id, "$old:localhost", "👍");
+    expect(toggleReaction).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /^Close$/ }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(toggleReaction).not.toHaveBeenCalled();
 
     fireEvent.pointerDown(screen.getByRole("button", { name: "More actions" }), {

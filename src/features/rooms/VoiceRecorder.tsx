@@ -159,7 +159,7 @@ export function VoiceRecorder({
               if (disabled || capturing) return;
               if (event.button !== 0 || !event.isPrimary || pointer.current) return;
               suppressPointerClick.current = false;
-              if (!mobile || event.pointerType === "mouse") return;
+              if (event.pointerType === "mouse") return;
               if (onStart?.() === false) return;
               pointer.current = { id: event.pointerId, x: event.clientX, cancelled: false };
               event.currentTarget.setPointerCapture(event.pointerId);

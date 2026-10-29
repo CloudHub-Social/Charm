@@ -172,7 +172,8 @@ capture-only meaning. Preview audio fits the available width and pauses on send.
 
 The post-CI P1–P5 integration mounts exactly one accessory inside ChatShell's
 existing composer under default-off `voice_recording`. The editor remains mounted
-through capture/preview/retry. A synchronous account/room send gate checks both
+through capture/preview/retry. Touch/pen hold works at every width; mouse and
+keyboard retain accessible start/stop, independently of compact layout. A synchronous account/room send gate checks both
 Enter and imperative submission before parsing or clearing the private draft;
 text, slash commands, poll creation and attachment preflight cannot compete with
 voice. External send ownership disables voice start/send without disabling stop

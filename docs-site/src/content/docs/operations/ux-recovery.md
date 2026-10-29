@@ -41,6 +41,22 @@ retained editor/media ownership, quiet reaction targets and original P1/P2
 containment/action assertions remain required in hosted regression qualification.
 Both coverage ratchets are preserved: functions 80.0%, branches 84.5%.
 
+Shared implementation commit `c410fa17` and follow-ups `89d10c1f`, `fb8266b5`
+and `4f23af9c` are on integration PR611. First hosted run 40797844101 exposed
+Spec52 MDX comparison escaping, recorder start-result fixture types and a reaction
+hold fixture querying an aria-hidden background; those were repaired without
+removing assertions. Hosted diagnostics then identified the focused-details hit
+layout and unready modal focus. Contextual details now keep a stable target across
+modal/group focus, and the browser establishes actual modal focus before Escape.
+No timeouts, reaction matrices, overlap bounds or toggle assertions were weakened.
+
+At `4f23af9c`, Quality 40832982293 browser job 123311253779 passed; frontend
+reached 2,337 passing tests and one legacy tombstoned-room disabled-chip expectation.
+The integrated affordance is explicitly read-only: its regression now verifies
+viewer access while proving no reaction mutation and retaining disabled Reply/Pin
+checks. A follow-up removes compact-only touch-hold gating so input modality stays
+independent of width. These follow-ups require fresh exact-head qualification.
+
 Implementation is in progress, not yet qualified. Exact-head hosted frontend,
 browser, security, axe, current screenshots and substantive review dispositions
 must pass. Existing gallery candidates and snapshot approvals are historical;

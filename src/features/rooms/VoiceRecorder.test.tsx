@@ -19,6 +19,25 @@ const capture = vi.hoisted(() => ({
 vi.mock("./useVoiceRecorder", () => ({ useVoiceRecorder: () => capture }));
 
 describe("VoiceRecorder", () => {
+  it("supports touch hold on a wide viewport without inferring input from width", () => {
+    capture.phase = "idle";
+    capture.preview = null;
+    render(<VoiceRecorder mobile={false} onSend={vi.fn()} onClearFailedUpload={vi.fn()} />);
+    const start = screen.getByRole("button", { name: "Record voice message" });
+    fireEvent.pointerDown(start, {
+      button: 0,
+      isPrimary: true,
+      pointerType: "touch",
+      pointerId: 7,
+      clientX: 120,
+    });
+    expect(capture.start).toHaveBeenCalledOnce();
+    fireEvent.pointerUp(start, { pointerType: "touch", pointerId: 7 });
+    expect(capture.stop).toHaveBeenCalledOnce();
+    fireEvent.click(start, { detail: 1 });
+    expect(capture.start).toHaveBeenCalledOnce();
+  });
+
   it("releases composer ownership after an immediate capture failure", async () => {
     capture.phase = "idle";
     capture.preview = null;
