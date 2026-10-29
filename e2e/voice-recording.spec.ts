@@ -213,12 +213,39 @@ test("staged drops and pastes wait behind voice without locking its send or losi
   const attachment = page.getByRole("button", { name: "Send attachment", exact: true });
   await expect(attachment).toBeDisabled();
   await expect(shell.getByRole("button", { name: "Stop recording", exact: true })).toBeEnabled();
-  await page.getByRole("button", { name: "Cancel attachment", exact: true }).click();
   await shell.getByRole("button", { name: "Stop recording", exact: true }).click();
   await expect(shell.getByLabel("Voice message preview")).toHaveAttribute("src", /^blob:/);
-  await editor.dispatchEvent("paste", { clipboardData: transfer });
-  await expect(attachment).toBeDisabled();
   const sendVoice = shell.getByRole("button", { name: "Send voice message", exact: true });
+  await expect(sendVoice).toBeEnabled();
+  await page.getByRole("button", { name: "Cancel attachment", exact: true }).click();
+  const clipboard = await editor.evaluate((element) => {
+    const data = new DataTransfer();
+    data.items.add(new File(["synthetic"], "pending.png", { type: "image/png" }));
+    Object.defineProperty(data.files[0], "path", { value: "/synthetic/pending.png" });
+    const event = new ClipboardEvent("paste", {
+      clipboardData: data,
+      bubbles: true,
+      cancelable: true,
+    });
+    let bubbled = false;
+    element.parentElement?.addEventListener(
+      "paste",
+      () => {
+        bubbled = true;
+      },
+      { once: true },
+    );
+    element.dispatchEvent(event);
+    return {
+      files: event.clipboardData?.files.length,
+      type: event.clipboardData?.files[0]?.type,
+      prevented: event.defaultPrevented,
+      bubbled,
+    };
+  });
+  expect(clipboard.files).toBe(1);
+  expect(clipboard.type).toBe("image/png");
+  await expect(attachment, JSON.stringify(clipboard)).toBeDisabled();
   await expect(sendVoice).toBeEnabled();
   await editor.press("Enter");
   await expect(editor).toContainText("Keep the text draft and both media owners");
