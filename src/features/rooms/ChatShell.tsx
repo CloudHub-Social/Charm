@@ -536,6 +536,8 @@ export function ChatShell({
       setReplyTarget,
       stopTyping,
       mutationsBlockedRef: roomMutationsBlockedRef,
+      currentUserId,
+      onNavigateToRoom: onNavigateToProfileRoom,
     });
   const messageActionController = useMessageActionController({
     roomId: activeRoomId,
