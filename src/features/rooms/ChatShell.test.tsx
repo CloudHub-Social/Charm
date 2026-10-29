@@ -5627,6 +5627,20 @@ describe("ChatShell", () => {
     );
   });
 
+  it("keeps flag-off attachment staging hidden during a busy voice draft", async () => {
+    vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
+    mockUseFlag.mockImplementation((key) => key !== "media_send_polish");
+    renderChatShell();
+    const textarea = await screen.findByPlaceholderText("Message general");
+    fireEvent.change(textarea, { target: { value: "Keep this draft" } });
+    fireEvent.click(screen.getByTestId("voice-gesture-mode"));
+    fireEvent.drop(textarea, { dataTransfer: { files: [new File(["fake"], "hidden.png")] } });
+    expect(screen.queryByRole("button", { name: "Send attachment" })).not.toBeInTheDocument();
+    expect(screen.queryByText("hidden.png")).not.toBeInTheDocument();
+    expect(sendAttachment).not.toHaveBeenCalled();
+    expect(textarea).toHaveValue("Keep this draft");
+  });
+
   it("releases ordinary upload ownership after preflight while the network remains pending", async () => {
     vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
     let finishUpload!: () => void;

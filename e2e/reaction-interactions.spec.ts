@@ -152,6 +152,10 @@ for (const layout of ["bubble", "discord", "irc"]) {
         if (layout === "bubble" && width === 320 && count === 20) {
           await captureSnapshot(page, "reactions-full-viewer-320");
         }
+        await expect
+          .poll(() => dialog.evaluate((element) => element.contains(document.activeElement)))
+          .toBe(true);
+        await expect(page.getByRole("tooltip")).toHaveCount(0);
         await page.keyboard.press("Escape");
         await expect(dialog).toHaveCount(0);
         await expect(chip).toBeFocused();

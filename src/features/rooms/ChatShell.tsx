@@ -615,8 +615,8 @@ export function ChatShell({
     // a tombstone received while the dialog was open cannot stage or send a
     // file through the stale click handler closure.
     if (roomMutationsBlockedRef.current || !sendGate.isCurrent()) return;
-    if (!mediaSendPolishEnabled && sendGate.canSubmit()) {
-      void sendExternalAttachment(file);
+    if (!mediaSendPolishEnabled) {
+      if (sendGate.canSubmit()) void sendExternalAttachment(file);
       return;
     }
     const filename = typeof file === "string" ? (file.split(/[/\\]/).pop() ?? file) : file.name;
@@ -983,7 +983,7 @@ export function ChatShell({
         </output>
       )}
 
-      {!roomMutationsBlocked && visiblePendingAttachment && (
+      {mediaSendPolishEnabled && !roomMutationsBlocked && visiblePendingAttachment && (
         <ComposerAttachmentPreview
           filename={visiblePendingAttachment.filename}
           caption={pendingAttachmentCaption}

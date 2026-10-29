@@ -111,6 +111,28 @@ secret and was not exposed; this does not prove the R2/startup cause. The separa
 PR606 owner must reconcile the archived service/target using protected provider
 receipts; no backend or production change is made here.
 
+Independent disposition `charm611-gallery-review-20261029-0735` accepts exactly
+the three d533 gallery candidates in artifact 12888883180. The coordinator
+opened all three, inspected current reaction source/browser assertions and
+matched candidate SHA256 hashes to the committed images. Acceptance covers the
+single inline preview, quiet >=44px reactions, contextual keyboard/read-only
+reactor access and no observed clipping in those captures. It does not approve
+external snapshots, physical acceptance, preview503 or another ready transition.
+
+At `406c852b33969dab8e4f5aaa39fb1187e33fa9e0`, Quality 40885082720 failed:
+2,343 unit tests passed and the compact Spaces fixture queried Back while the
+mounted chat was still hidden behind the list. It now explicitly selects its
+room before testing visible Back and Spaces; none of those assertions is removed.
+The browser again observed a reactor dialog remaining open after Escape.
+Tooltip content now unmounts while the dialog owns focus; a focused Escape handler
+also covers rapid layer reordering, and a repeated-open regression retains focus
+return assertions. Review follow-ups add an attempt token so a superseded
+microphone request cannot release a newer busy claim, and restore the default-off
+media preview guard, including preventing flag-off busy drops from staging files.
+These changes require fresh exact-head hosted qualification. The earlier Map and
+background-upload regressions passed among the 2,343 unit tests; the entire
+frontend gate, coverage qualification and browser suite did not pass this head.
+
 Implementation is in progress, not yet qualified. Exact-head hosted frontend,
 browser, security, axe, current screenshots and substantive review dispositions
 must pass. Existing gallery candidates and snapshot approvals are historical;

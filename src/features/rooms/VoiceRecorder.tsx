@@ -34,6 +34,7 @@ export function VoiceRecorder({
   const [sendError, setSendError] = useState(false);
   const sendingRef = useRef(false);
   const mounted = useRef(true);
+  const startAttempt = useRef(0);
   const previewAudio = useRef<HTMLAudioElement>(null);
   const recordButton = useRef<HTMLButtonElement>(null);
   const restoreIdleFocus = useRef(false);
@@ -49,6 +50,7 @@ export function VoiceRecorder({
     mounted.current = true;
     return () => {
       mounted.current = false;
+      startAttempt.current += 1;
     };
   }, []);
   const capturing = recorder.phase === "recording" || recorder.phase === "requesting";
@@ -77,10 +79,12 @@ export function VoiceRecorder({
     "min-h-11 min-w-11 rounded-md px-3 text-sm hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50";
 
   async function startRecording() {
+    const attempt = ++startAttempt.current;
     const started = await recorder.start();
     // Unsupported/denied capture can finish in the initiating event batch.
     // Release the synchronous claim even if no busy render was committed.
-    if (started === false && mounted.current) onBusyChange?.(false);
+    if (started === false && mounted.current && startAttempt.current === attempt)
+      onBusyChange?.(false);
   }
 
   async function send() {

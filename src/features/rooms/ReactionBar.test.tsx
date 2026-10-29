@@ -210,6 +210,28 @@ describe("ReactionBar", () => {
     },
   );
 
+  it("dismisses a rapidly reopened reactor dialog with Escape and returns focus each time", async () => {
+    getReactionDetails.mockResolvedValue([{ sender: "@reactor:example.org", origin_server_ts: 1 }]);
+    render(
+      <ReactionBar
+        reactions={[{ key: "👍", count: 1, reacted_by_me: true }]}
+        onToggle={vi.fn()}
+        roomId="!room:example.org"
+        eventId="$event"
+      />,
+    );
+    const details = screen.getByRole("button", { name: "View all 1 reactions for 👍" });
+    for (let attempt = 0; attempt < 3; attempt++) {
+      details.focus();
+      fireEvent.click(details);
+      const dialog = await screen.findByRole("dialog");
+      expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+      fireEvent.keyDown(dialog, { key: "Escape" });
+      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+      await waitFor(() => expect(details).toHaveFocus());
+    }
+  });
+
   it("retries a failed prototype-named reaction without inheriting an error or generation", async () => {
     getReactionDetails
       .mockRejectedValueOnce(new Error("unavailable"))

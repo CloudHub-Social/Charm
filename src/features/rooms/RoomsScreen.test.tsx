@@ -1098,6 +1098,11 @@ describe("RoomsScreen", () => {
       />,
     );
     await screen.findByText("chat-content:!room:example.org");
+    // Compact starts in the list; mounted chat content alone is not visible navigation.
+    fireEvent.click(screen.getByRole("button", { name: "!room:example.org" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "back-to-chats" })).toBeVisible(),
+    );
     fireEvent.click(screen.getByRole("button", { name: "back-to-chats" }));
     fireEvent.click(screen.getByRole("button", { name: "Spaces" }));
 

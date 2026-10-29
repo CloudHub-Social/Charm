@@ -47,6 +47,14 @@ export function WhoReactedDialog({
         className="sm:max-w-sm"
         showCloseButton={false}
         onCloseAutoFocus={onCloseAutoFocus}
+        onKeyDown={(event) => {
+          // Handle Escape from the focused dialog even during rapid reopen,
+          // before Radix's document-level layer ordering has settled.
+          if (event.key !== "Escape" || event.defaultPrevented) return;
+          event.preventDefault();
+          event.stopPropagation();
+          onOpenChange(false);
+        }}
       >
         <DialogHeader>
           <DialogTitle className="break-all">

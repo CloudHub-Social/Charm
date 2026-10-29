@@ -260,21 +260,23 @@ function ScopedReactionBar({
           }}
         >
           <TooltipTrigger asChild>{chip}</TooltipTrigger>
-          <TooltipContent className="max-w-[calc(100vw-2rem)] break-all">
-            {detailError ? (
-              "Could not load reactions."
-            ) : !details ? (
-              "Loading…"
-            ) : details.length === 0 ? (
-              "No reactions"
-            ) : (
-              <div className="flex flex-col gap-0.5">
-                {details.slice(0, TOOLTIP_NAME_LIMIT).map((detail) => (
-                  <span key={`${detail.sender}-${detail.origin_server_ts}`}>{detail.sender}</span>
-                ))}
-              </div>
-            )}
-          </TooltipContent>
+          {modalKey === null && (
+            <TooltipContent className="max-w-[calc(100vw-2rem)] break-all">
+              {detailError ? (
+                "Could not load reactions."
+              ) : !details ? (
+                "Loading…"
+              ) : details.length === 0 ? (
+                "No reactions"
+              ) : (
+                <div className="flex flex-col gap-0.5">
+                  {details.slice(0, TOOLTIP_NAME_LIMIT).map((detail) => (
+                    <span key={`${detail.sender}-${detail.origin_server_ts}`}>{detail.sender}</span>
+                  ))}
+                </div>
+              )}
+            </TooltipContent>
+          )}
         </Tooltip>
         <button
           type="button"

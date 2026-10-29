@@ -55,6 +55,43 @@ describe("VoiceRecorder", () => {
     expect(busy).toHaveBeenLastCalledWith(false);
   });
 
+  it("does not release a newer recording claim when a superseded permission request fails", async () => {
+    capture.phase = "idle";
+    capture.preview = null;
+    let finishOld!: (started: boolean) => void;
+    capture.start
+      .mockReturnValueOnce(
+        new Promise<boolean>((resolve) => {
+          finishOld = resolve;
+        }),
+      )
+      .mockResolvedValueOnce(true);
+    const busy = vi.fn();
+    const props = {
+      mobile: false,
+      onStart: () => true,
+      onBusyChange: busy,
+      onSend: vi.fn(),
+      onClearFailedUpload: vi.fn(),
+    };
+    const view = render(<VoiceRecorder {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "Record voice message" }));
+    capture.phase = "requesting";
+    view.rerender(<VoiceRecorder {...props} />);
+    capture.phase = "idle";
+    view.rerender(<VoiceRecorder {...props} />);
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "Record voice message" })),
+    );
+    capture.phase = "recording";
+    view.rerender(<VoiceRecorder {...props} />);
+    expect(busy).toHaveBeenLastCalledWith(true);
+    busy.mockClear();
+    await act(async () => finishOld(false));
+    expect(busy).not.toHaveBeenCalledWith(false);
+    expect(screen.getByRole("button", { name: "Stop recording" })).toBeInTheDocument();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     capture.phase = "preview";
