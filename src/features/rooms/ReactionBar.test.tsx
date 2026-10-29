@@ -187,6 +187,49 @@ describe("ReactionBar", () => {
     expect(await screen.findByText("@user-8:example.org")).toBeInTheDocument();
   });
 
+  it.each(["constructor", "__proto__", "toString"])(
+    "loads and displays reactors for the server-controlled key %s",
+    async (key) => {
+      getReactionDetails.mockResolvedValue([
+        { sender: "@prototype-key:example.org", origin_server_ts: 1 },
+      ]);
+      const onToggle = vi.fn();
+      render(
+        <ReactionBar
+          reactions={[{ key, count: 1, reacted_by_me: false }]}
+          onToggle={onToggle}
+          roomId="!room:example.org"
+          eventId="$event"
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: `View all 1 reactions for ${key}` }));
+      expect(await screen.findByText("@prototype-key:example.org")).toBeInTheDocument();
+      expect(getReactionDetails).toHaveBeenCalledWith("!room:example.org", "$event", key);
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(onToggle).not.toHaveBeenCalled();
+    },
+  );
+
+  it("retries a failed prototype-named reaction without inheriting an error or generation", async () => {
+    getReactionDetails
+      .mockRejectedValueOnce(new Error("unavailable"))
+      .mockResolvedValueOnce([{ sender: "@retry:example.org", origin_server_ts: 2 }]);
+    render(
+      <ReactionBar
+        reactions={[{ key: "__proto__", count: 1, reacted_by_me: false }]}
+        onToggle={vi.fn()}
+        roomId="!room:example.org"
+        eventId="$event"
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "View all 1 reactions for __proto__" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not load reactions.");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("@retry:example.org")).toBeInTheDocument();
+    expect(getReactionDetails).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("shows a loading state while the full reactor list refetches", async () => {
     getReactionDetails.mockReturnValue(new Promise(() => {}));
     const reactions: ReactionGroup[] = [{ key: "👍", count: 9, reacted_by_me: false }];

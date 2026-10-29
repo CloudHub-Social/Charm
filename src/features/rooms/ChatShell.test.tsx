@@ -5627,6 +5627,41 @@ describe("ChatShell", () => {
     );
   });
 
+  it("releases ordinary upload ownership after preflight while the network remains pending", async () => {
+    vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
+    let finishUpload!: () => void;
+    sendAttachment.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishUpload = resolve;
+        }),
+    );
+    let finishPreflight!: (limit: number) => void;
+    getMediaConfig.mockReturnValue(
+      new Promise<number>((resolve) => {
+        finishPreflight = resolve;
+      }),
+    );
+    renderChatShell();
+    const textarea = await screen.findByPlaceholderText("Message general");
+    const file = new File(["fake"], "background.png", { type: "image/png" });
+    fireEvent.change(textarea, { target: { value: "Keep this draft through preflight" } });
+    fireEvent.drop(textarea, { dataTransfer: { files: [file] } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send attachment" }));
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(textarea).toHaveValue("Keep this draft through preflight");
+    expect(sendMessage).not.toHaveBeenCalled();
+    await act(async () => finishPreflight(100 * 1024 * 1024));
+    await waitFor(() => expect(sendAttachment).toHaveBeenCalledOnce());
+    // Upload is still unresolved; only the transfer's controller owns it now.
+    expect(screen.getByText("background.png")).toBeInTheDocument();
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    await waitFor(() => expect(sendMessage).toHaveBeenCalled());
+    expect(textarea).toHaveValue("");
+    await act(async () => finishUpload());
+    await waitFor(() => expect(screen.queryByText("background.png")).not.toBeInTheDocument());
+  });
+
   it("aborts the in-flight web upload's fetch when dismissed", async () => {
     vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
     sendAttachment.mockImplementation(() => new Promise(() => {})); // never resolves during this test

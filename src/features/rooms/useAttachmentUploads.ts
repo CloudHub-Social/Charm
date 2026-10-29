@@ -132,6 +132,7 @@ export function useAttachmentUploads(
     file: string | File,
     caption?: string,
     voice?: VoiceMessageMetadata,
+    onStarted?: () => void,
   ): Promise<boolean> {
     if (!roomId || ownerDisposed.current || mutationsBlockedRef?.current) return false;
     const generation = ownerGeneration.current;
@@ -184,7 +185,7 @@ export function useAttachmentUploads(
     const abortController = isWebBuild() || voice ? new AbortController() : undefined;
     if (abortController) uploadAbortControllers.current.set(txnId, abortController);
     try {
-      await sendAttachment(
+      const sending = sendAttachment(
         roomId,
         file,
         txnId,
@@ -193,6 +194,10 @@ export function useAttachmentUploads(
         abortController?.signal,
         voice,
       );
+      // The account/room-scoped upload controller now owns transport and
+      // cancellation. Ordinary uploads may continue behind another draft.
+      onStarted?.();
+      await sending;
       if (generation !== ownerGeneration.current) return false;
       setUploads((prev) => prev.filter((u) => u.txnId !== txnId));
       return true;

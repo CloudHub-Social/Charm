@@ -69,8 +69,8 @@ function ScopedReactionBar({
   const canViewDetails = messageActionParityEnabled && !!roomId && !!eventId?.startsWith("$");
   const returnFocusRef = useRef<HTMLElement | null>(null);
   const groupRef = useRef<HTMLFieldSetElement | null>(null);
-  const [detailsByKey, setDetailsByKey] = useState<Record<string, ReactionDetail[]>>({});
-  const [detailErrorsByKey, setDetailErrorsByKey] = useState<Record<string, boolean>>({});
+  const [detailsByKey, setDetailsByKey] = useState(() => new Map<string, ReactionDetail[]>());
+  const [detailErrorsByKey, setDetailErrorsByKey] = useState(() => new Map<string, boolean>());
   const [modalKey, setModalKeyState] = useState<string | null>(null);
   // Keep the contextual target in layout until modal focus has returned.
   const [detailsVisibleKey, setDetailsVisibleKey] = useState<string | null>(null);
@@ -79,7 +79,7 @@ function ScopedReactionBar({
   // generation to prevent duplicate requests and discard responses invalidated
   // by tooltip close/refetch.
   const inFlightKeysRef = useRef(new Set<string>());
-  const requestGenerationRef = useRef<Record<string, number>>({});
+  const requestGenerationRef = useRef(new Map<string, number>());
   // Mirrors `modalKey` for synchronous reads inside `clearDetails` — React
   // batches the "View all" button's `setModalKey` with the state update
   // from the Tooltip's own `onOpenChange(false)` (both fire from the same
@@ -105,27 +105,27 @@ function ScopedReactionBar({
   function loadDetails(reaction: ReactionGroup, options?: { force?: boolean }) {
     if (!canViewDetails || !roomId || !eventId) return;
     const key = reaction.key;
-    if (!options?.force && (detailsByKey[key] || inFlightKeysRef.current.has(key))) return;
-    const generation = (requestGenerationRef.current[key] ?? 0) + 1;
-    requestGenerationRef.current[key] = generation;
+    if (!options?.force && (detailsByKey.has(key) || inFlightKeysRef.current.has(key))) return;
+    const generation = (requestGenerationRef.current.get(key) ?? 0) + 1;
+    requestGenerationRef.current.set(key, generation);
     inFlightKeysRef.current.add(key);
     setDetailErrorsByKey((prev) => {
-      if (!prev[key]) return prev;
-      const next = { ...prev };
-      delete next[key];
+      if (!prev.has(key)) return prev;
+      const next = new Map(prev);
+      next.delete(key);
       return next;
     });
     getReactionDetails(roomId, eventId, key)
       .then((details) => {
-        if (requestGenerationRef.current[key] !== generation) return;
-        setDetailsByKey((prev) => ({ ...prev, [key]: details }));
+        if (requestGenerationRef.current.get(key) !== generation) return;
+        setDetailsByKey((prev) => new Map(prev).set(key, details));
       })
       .catch(() => {
-        if (requestGenerationRef.current[key] !== generation) return;
-        setDetailErrorsByKey((prev) => ({ ...prev, [key]: true }));
+        if (requestGenerationRef.current.get(key) !== generation) return;
+        setDetailErrorsByKey((prev) => new Map(prev).set(key, true));
       })
       .finally(() => {
-        if (requestGenerationRef.current[key] !== generation) return;
+        if (requestGenerationRef.current.get(key) !== generation) return;
         inFlightKeysRef.current.delete(key);
       });
   }
@@ -134,18 +134,18 @@ function ScopedReactionBar({
     // from this same cache and closing the tooltip shouldn't blank it out.
     // Reads the ref (not the `modalKey` state) — see its declaration above.
     if (modalKeyRef.current === key) return;
-    requestGenerationRef.current[key] = (requestGenerationRef.current[key] ?? 0) + 1;
+    requestGenerationRef.current.set(key, (requestGenerationRef.current.get(key) ?? 0) + 1);
     inFlightKeysRef.current.delete(key);
     setDetailErrorsByKey((prev) => {
-      if (!(key in prev)) return prev;
-      const next = { ...prev };
-      delete next[key];
+      if (!prev.has(key)) return prev;
+      const next = new Map(prev);
+      next.delete(key);
       return next;
     });
     setDetailsByKey((prev) => {
-      if (!(key in prev)) return prev;
-      const next = { ...prev };
-      delete next[key];
+      if (!prev.has(key)) return prev;
+      const next = new Map(prev);
+      next.delete(key);
       return next;
     });
   }
@@ -235,8 +235,8 @@ function ScopedReactionBar({
       );
     }
 
-    const details = detailsByKey[reaction.key];
-    const detailError = detailErrorsByKey[reaction.key];
+    const details = detailsByKey.get(reaction.key);
+    const detailError = detailErrorsByKey.get(reaction.key);
     return (
       <span
         key={reaction.key}
@@ -250,9 +250,10 @@ function ScopedReactionBar({
         }}
       >
         <Tooltip
+          open={tooltipKey === reaction.key && modalKey === null}
           onOpenChange={(open) => {
             if (open) {
-              setTooltipKey(reaction.key);
+              if (modalKeyRef.current === null) setTooltipKey(reaction.key);
               return;
             }
             if (tooltipKeyRef.current === reaction.key) setTooltipKey(null);
@@ -327,13 +328,13 @@ function ScopedReactionBar({
       <WhoReactedDialog
         open={modalKey !== null}
         reactionKey={modalKey}
-        details={modalReaction ? (detailsByKey[modalReaction.key] ?? []) : []}
+        details={modalReaction ? (detailsByKey.get(modalReaction.key) ?? []) : []}
         loading={
           modalReaction !== undefined &&
-          detailsByKey[modalReaction.key] === undefined &&
-          !detailErrorsByKey[modalReaction.key]
+          !detailsByKey.has(modalReaction.key) &&
+          !detailErrorsByKey.get(modalReaction.key)
         }
-        error={modalReaction !== undefined && detailErrorsByKey[modalReaction.key]}
+        error={modalReaction !== undefined && detailErrorsByKey.get(modalReaction.key)}
         onRetry={() => modalReaction && loadDetails(modalReaction, { force: true })}
         onOpenChange={(open) => !open && closeModal()}
         onCloseAutoFocus={(event) => {

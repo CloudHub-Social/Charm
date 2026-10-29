@@ -628,7 +628,7 @@ export function ChatShell({
     const release = sendGate.startExternal();
     if (!release) return false;
     try {
-      return await handleAttachFile(file, caption);
+      return await handleAttachFile(file, caption, undefined, release);
     } finally {
       release();
     }

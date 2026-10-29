@@ -194,8 +194,11 @@ for (const layout of ["bubble", "discord", "irc"]) {
         await expect
           .poll(() => dialog.evaluate((element) => element.contains(document.activeElement)))
           .toBe(true);
+        // A reactor tooltip must not compete with the modal for Escape.
+        await expect(page.getByRole("tooltip")).toHaveCount(0);
         await page.keyboard.press("Escape");
         try {
+          await expect(dialog).toHaveCount(0);
           await expect(details).toBeFocused();
           // Only an ordinary activation removes this user's reaction.
           await chip.click();
@@ -203,26 +206,23 @@ for (const layout of ["bubble", "discord", "irc"]) {
             0,
           );
         } catch (error) {
-          if (layout === "bubble" && width === 320 && count === 1) {
-            console.error(
-              "reaction lifecycle diagnostic",
-              await page.evaluate(() => ({
-                history: (window as unknown as { reactionDiagnostics: unknown })
-                  .reactionDiagnostics,
-                active: document.activeElement?.outerHTML,
-                dialogs: Array.from(document.querySelectorAll('[role="dialog"]')).map((node) => ({
-                  state: node.getAttribute("data-state"),
-                  text: node.textContent?.slice(0, 100),
-                })),
-                groups: Array.from(
-                  document.querySelectorAll('fieldset[aria-label="Reactions"]'),
-                ).map((node) => ({
+          console.error(
+            "reaction lifecycle diagnostic",
+            await page.evaluate(() => ({
+              history: (window as unknown as { reactionDiagnostics: unknown }).reactionDiagnostics,
+              active: document.activeElement?.outerHTML,
+              dialogs: Array.from(document.querySelectorAll('[role="dialog"]')).map((node) => ({
+                state: node.getAttribute("data-state"),
+                text: node.textContent?.slice(0, 100),
+              })),
+              groups: Array.from(document.querySelectorAll('fieldset[aria-label="Reactions"]')).map(
+                (node) => ({
                   hidden: !!node.closest('[aria-hidden="true"]'),
                   html: node.innerHTML,
-                })),
-              })),
-            );
-          }
+                }),
+              ),
+            })),
+          );
           throw error;
         }
       });

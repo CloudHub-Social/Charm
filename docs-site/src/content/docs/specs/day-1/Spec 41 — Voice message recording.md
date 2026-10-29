@@ -181,6 +181,10 @@ or discard, and voice never disables its own upload. Late file picker/preflight
 results cannot retarget a changed account/room. A blocked staged attachment is
 retained rather than cleared. Preview/retry retain the existing file, metadata,
 encryption, local echo and transaction route; no second send pipeline is added.
+Ordinary attachments release composer ownership after guarded preflight hands
+the transfer to the account/room-scoped upload controller. Their network transfer
+and cancellation continue in the background without blocking another draft;
+voice preview/send retains its separate ownership until success or discard.
 
 Integrated qualification remains pending current-head hosted regressions,
 accessibility, visual review and required snapshot approvals. See the

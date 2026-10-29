@@ -83,6 +83,34 @@ selected by the merged CI change detector, so aggregate gate success is not a
 native build pass. PR611 stays draft following the coordinator's deliberate
 ready-step cancellation; draft review/checklist exemptions do not qualify review.
 
+At `20b12895cd26e02fa389d50310ec7f430a3cffd8`, Quality 40866542251,
+CodeQL 40866542183 and docs 40866542157 passed, including the gallery refresh.
+Browser totals were 234 passed, one passed on retry and 34 skipped, plus the
+separate no-capture witness. The retry was IRC 430px/one reaction: after Escape,
+the details focus target was unavailable. The tooltip is now explicitly controlled
+and suppressed while its reactor dialog owns focus; the browser additionally
+requires no tooltip, then dialog removal and the original focus/toggle assertions.
+That change needs fresh hosted evidence; the previous success is not flake-free.
+
+The owner/coordinator approved snapshot sets 121387/121388, confirmed by current
+head Snapshot Testing SUCCESS. These decisions belong to 20b12895 and must be
+reconciled for later captures. The PR is now non-draft by external owner action;
+this executor did not retry the cancelled ready step. Review gate 40872218699
+failed after Seer finished because two real findings remained unresolved, not
+because Codex approval was mandatory. Reaction caches and request generations
+now use Maps for arbitrary server-controlled keys, with constructor/__proto__/
+toString and retry regressions. Ordinary attachment ownership now releases only
+after guarded preflight dispatches to the upload controller, preserving drafts
+during preflight while permitting independent background transfer. Voice's own
+busy/send/retry ownership remains separate. Both findings await hosted validation.
+
+Preview 40866542182 failed HTTP503 at 2026-10-29T11:36:24.698Z. Its response body
+contains DigitalOcean's archived-app page, narrowing this to upstream availability
+or target routing rather than a frontend build failure. The configured target is
+secret and was not exposed; this does not prove the R2/startup cause. The separate
+PR606 owner must reconcile the archived service/target using protected provider
+receipts; no backend or production change is made here.
+
 Implementation is in progress, not yet qualified. Exact-head hosted frontend,
 browser, security, axe, current screenshots and substantive review dispositions
 must pass. Existing gallery candidates and snapshot approvals are historical;
