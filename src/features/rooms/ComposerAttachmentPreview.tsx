@@ -4,6 +4,7 @@ interface ComposerAttachmentPreviewProps {
   filename: string;
   caption: string;
   disabled: boolean;
+  sendEnabled: boolean;
   onCaptionChange: (caption: string) => void;
   onConfirm: () => void;
   onCancel: () => void;
@@ -14,10 +15,28 @@ export function ComposerAttachmentPreview({
   filename,
   caption,
   disabled,
+  sendEnabled,
   onCaptionChange,
   onConfirm,
   onCancel,
 }: ComposerAttachmentPreviewProps) {
+  if (!sendEnabled) {
+    // Preserve the user's staged file when the flag changes, with an escape
+    // path that cannot expose the disabled caption/send feature.
+    return (
+      <div className="flex min-w-0 items-center gap-2 px-4 pb-2 text-sm">
+        <span className="min-w-0 truncate">{filename}</span>
+        <button
+          type="button"
+          aria-label="Cancel attachment"
+          onClick={onCancel}
+          className="min-h-11 min-w-11 shrink-0 rounded px-2 hover:bg-accent"
+        >
+          Discard pending attachment
+        </button>
+      </div>
+    );
+  }
   return (
     <div className="flex flex-col gap-2 px-4 pb-2">
       <div className="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-[13px]">

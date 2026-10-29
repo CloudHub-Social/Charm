@@ -5641,6 +5641,28 @@ describe("ChatShell", () => {
     expect(textarea).toHaveValue("Keep this draft");
   });
 
+  it("retains only a cancellation path when media polish is disabled with a staged file", async () => {
+    vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
+    const view = renderChatShell();
+    const textarea = await screen.findByPlaceholderText("Message general");
+    fireEvent.change(textarea, { target: { value: "Keep my text" } });
+    fireEvent.drop(textarea, { dataTransfer: { files: [new File(["fake"], "retained.png")] } });
+    await screen.findByRole("button", { name: "Send attachment" });
+    mockUseFlag.mockImplementation((key) => key !== "media_send_polish");
+    view.rerender(
+      <JotaiProvider store={view.store}>
+        <ChatShell room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    expect(screen.queryByRole("button", { name: "Send attachment" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Attachment caption" })).not.toBeInTheDocument();
+    expect(screen.getByText("retained.png")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel attachment" }));
+    expect(screen.queryByText("retained.png")).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Message general")).toHaveValue("Keep my text");
+    expect(sendAttachment).not.toHaveBeenCalled();
+  });
+
   it("releases ordinary upload ownership after preflight while the network remains pending", async () => {
     vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
     let finishUpload!: () => void;

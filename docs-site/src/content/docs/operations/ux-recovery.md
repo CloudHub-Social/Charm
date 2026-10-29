@@ -133,6 +133,29 @@ These changes require fresh exact-head hosted qualification. The earlier Map and
 background-upload regressions passed among the 2,343 unit tests; the entire
 frontend gate, coverage qualification and browser suite did not pass this head.
 
+At `e1693ca0`, Quality 40896839116 frontend job 123528304836 passed 2,346
+unit tests and failed only the compact fixture: AppShell's selected-room effect
+could reveal chat before an explicit list click. The fixture now waits for the
+accessible visible Back control before exercising Back/Spaces, preserving those
+assertions. A flag-change follow-up retains a cancellation-only path for an
+already staged file; caption/send stay disabled while the user's pending file
+and text are preserved. This avoids stranding voice behind an invisible file.
+The audit timeout/error strings in this job belong to synthetic wrapper
+self-tests, not a demonstrated live advisory outage; the subsequent real audit
+reported one low and six moderate advisories. No security result is substituted
+for a successful exact-head gate.
+The e169 browser job 123528304870 subsequently passed 235 cases with 34 skips,
+no reported retries/flakes, plus the separate no-capture witness. This verifies
+the modal lifecycle repair on e169, not the later fixture/recovery follow-up head.
+
+The coordinator independently compared preview 40759455355/job123067215156 on
+CI-only PR610 (October 28) with e169 preview40896838617/job123528257321 (October29):
+both `/api/auth/me` checks returned HTTP503 and the archived DigitalOcean HTML.
+This supports a pre-existing service outage independent of UI integration, under
+PR606 custody. It neither verifies current main nor authorizes a preview bypass,
+production change or merge. Protected service/target/startup reconciliation remains
+with that existing backend owner.
+
 Implementation is in progress, not yet qualified. Exact-head hosted frontend,
 browser, security, axe, current screenshots and substantive review dispositions
 must pass. Existing gallery candidates and snapshot approvals are historical;

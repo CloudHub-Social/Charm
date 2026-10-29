@@ -1098,12 +1098,11 @@ describe("RoomsScreen", () => {
       />,
     );
     await screen.findByText("chat-content:!room:example.org");
-    // Compact starts in the list; mounted chat content alone is not visible navigation.
-    fireEvent.click(screen.getByRole("button", { name: "!room:example.org" }));
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "back-to-chats" })).toBeVisible(),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "back-to-chats" }));
+    // AppShell reveals the selected room in an effect; mounted content can
+    // precede that visibility update. Wait for the actual accessible Back control.
+    const back = await screen.findByRole("button", { name: "back-to-chats" });
+    expect(back).toBeVisible();
+    fireEvent.click(back);
     fireEvent.click(screen.getByRole("button", { name: "Spaces" }));
 
     expect(screen.getByRole("heading", { name: /^Spaces$/ })).toBeInTheDocument();

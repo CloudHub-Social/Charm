@@ -983,7 +983,7 @@ export function ChatShell({
         </output>
       )}
 
-      {mediaSendPolishEnabled && !roomMutationsBlocked && visiblePendingAttachment && (
+      {!roomMutationsBlocked && visiblePendingAttachment && (
         <ComposerAttachmentPreview
           filename={visiblePendingAttachment.filename}
           caption={pendingAttachmentCaption}
@@ -991,6 +991,7 @@ export function ChatShell({
           onConfirm={handleConfirmPendingAttachment}
           onCancel={handleCancelPendingAttachment}
           disabled={!sendGate.canSubmit()}
+          sendEnabled={mediaSendPolishEnabled}
         />
       )}
 
