@@ -82,6 +82,24 @@ for (const layout of ["bubble", "discord", "irc"]) {
         await page.goto("/");
         await page.getByRole("button", { name: ROOM.name }).click();
         await expect(page.getByText("Synthetic reaction message", { exact: true })).toBeVisible();
+        if (layout === "bubble" && width === 320 && count === 1) {
+          await page.evaluate(() => {
+            const state = { commands: [] as string[], focus: [] as string[] };
+            (window as unknown as { reactionDiagnostics: typeof state }).reactionDiagnostics =
+              state;
+            const invoke = window.__TAURI_INTERNALS__.invoke;
+            window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+              if (command === "toggle_reaction") state.commands.push(JSON.stringify(args));
+              return invoke(command, args);
+            };
+            document.addEventListener("focusin", (event) => {
+              const target = event.target as HTMLElement;
+              state.focus.push(
+                `${target.tagName}:${target.getAttribute("aria-label")}:${target.textContent?.slice(0, 60)}`,
+              );
+            });
+          });
+        }
         await page.setViewportSize({ width, height: 900 });
         const bar = page.getByRole("group", { name: "Reactions", exact: true });
         await expect(bar).toBeVisible();
@@ -174,11 +192,36 @@ for (const layout of ["bubble", "discord", "irc"]) {
         await details.press("Enter");
         await expect(dialog).toBeVisible();
         await page.keyboard.press("Escape");
-        await expect(details).toBeFocused();
-
-        // Only an ordinary activation removes this user's reaction.
-        await chip.click();
-        await expect(bar.locator("button[aria-pressed]").filter({ hasText: "👍" })).toHaveCount(0);
+        try {
+          await expect(details).toBeFocused();
+          // Only an ordinary activation removes this user's reaction.
+          await chip.click();
+          await expect(bar.locator("button[aria-pressed]").filter({ hasText: "👍" })).toHaveCount(
+            0,
+          );
+        } catch (error) {
+          if (layout === "bubble" && width === 320 && count === 1) {
+            console.info(
+              "reaction lifecycle diagnostic",
+              await page.evaluate(() => ({
+                history: (window as unknown as { reactionDiagnostics: unknown })
+                  .reactionDiagnostics,
+                active: document.activeElement?.outerHTML,
+                dialogs: Array.from(document.querySelectorAll('[role="dialog"]')).map((node) => ({
+                  state: node.getAttribute("data-state"),
+                  text: node.textContent?.slice(0, 100),
+                })),
+                groups: Array.from(
+                  document.querySelectorAll('fieldset[aria-label="Reactions"]'),
+                ).map((node) => ({
+                  hidden: !!node.closest('[aria-hidden="true"]'),
+                  html: node.innerHTML,
+                })),
+              })),
+            );
+          }
+          throw error;
+        }
       });
     }
   }

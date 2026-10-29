@@ -18,7 +18,7 @@ export function useComposerSendGate(scope: string, mutationsBlocked: RefObject<b
       canSubmit,
       canSendVoice,
       isCurrent: current,
-      startExternal() {
+      startExternal: () => {
         if (!canSubmit()) return null;
         owner.external = true;
         notify();
@@ -30,13 +30,13 @@ export function useComposerSendGate(scope: string, mutationsBlocked: RefObject<b
           notify();
         };
       },
-      startVoice() {
+      startVoice: () => {
         if (!canSendVoice() || owner.voice) return false;
         owner.voice = true;
         notify();
         return true;
       },
-      updateVoice(busy: boolean) {
+      updateVoice: (busy: boolean) => {
         if (!current()) return;
         owner.voice = busy;
         notify();
