@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 /** One account/room owns a composer. Acquire before async preflight or draft clearing. */
 export function useComposerSendGate(scope: string, mutationsBlocked: RefObject<boolean>) {
   const [, refresh] = useState(0);
-  const owner = useMemo(() => ({ active: true, voice: false, external: false }), [scope]);
+  const owner = useMemo(() => ({ scope, active: true, voice: false, external: false }), [scope]);
   const currentOwner = useRef(owner);
   currentOwner.current = owner;
   const gate = useMemo(() => {

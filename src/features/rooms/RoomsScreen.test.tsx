@@ -2,7 +2,11 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { createStore, Provider } from "jotai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RoomsScreen } from "./RoomsScreen";
-import { membersDrawerOpenAtomFamily, roomSettingsAtom } from "@/features/room-info/roomInfoAtoms";
+import {
+  membersDrawerOpenAtomFamily,
+  pinnedMessagesDrawerOpenAtomFamily,
+  roomSettingsAtom,
+} from "@/features/room-info/roomInfoAtoms";
 import type { RoomSummary } from "@/lib/matrix";
 
 const mockUseAdaptiveLayout = vi.fn(() => "desktop");
@@ -23,7 +27,10 @@ const mockUseRoomDetails = vi.fn((roomId: string | null, refetchOnMount = false)
   };
 });
 vi.mock("@/features/shell/useAdaptiveLayout", () => ({
-  useAdaptiveLayout: () => mockUseAdaptiveLayout(),
+  useAdaptiveLayout: (options?: { adaptive: boolean }) =>
+    options?.adaptive
+      ? { width: mockUseAdaptiveLayout() === "mobile" ? "compact" : mockAdaptiveWidth() }
+      : mockUseAdaptiveLayout(),
   useAdaptiveLayoutState: () => ({
     width: mockUseAdaptiveLayout() === "mobile" ? "compact" : mockAdaptiveWidth(),
   }),
@@ -87,6 +94,14 @@ vi.mock("@/features/room-info/MembersDrawer", () => ({
         navigate-to-new-dm
       </button>
     </div>
+  ),
+}));
+
+vi.mock("@/features/room-info/PinnedMessagesPanel", () => ({
+  PinnedMessagesPanel: ({ onJumpToMessage }: { onJumpToMessage: (eventId: string) => void }) => (
+    <button type="button" onClick={() => onJumpToMessage("$pinned")}>
+      jump-to-pinned-message
+    </button>
   ),
 }));
 
@@ -502,6 +517,26 @@ describe("RoomsScreen", () => {
     expect(
       screen.queryByRole("button", { name: `accept:${invite.room_id}` }),
     ).not.toBeInTheDocument();
+  });
+
+  it.each(["medium", "wide"])("reveals the pinned destination at %s width", async (width) => {
+    mockAdaptiveWidth.mockReturnValue(width);
+    const store = createStore();
+    render(
+      <Provider store={store}>
+        <RoomsScreen
+          currentUserId="@me:example.org"
+          deepLinkRoomId={null}
+          onDeepLinkConsumed={() => {}}
+          onLoggedOut={() => {}}
+        />
+      </Provider>,
+    );
+    await screen.findByText("chat-content:!a:example.org");
+    act(() => store.set(pinnedMessagesDrawerOpenAtomFamily("!a:example.org"), true));
+    fireEvent.click(await screen.findByRole("button", { name: "jump-to-pinned-message" }));
+    expect(screen.getByText("jump-to-event:$pinned")).toBeVisible();
+    expect(store.get(pinnedMessagesDrawerOpenAtomFamily("!a:example.org"))).toBe(width === "wide");
   });
 
   it("updates native focus when a visible context panel replaces chat at medium width", async () => {

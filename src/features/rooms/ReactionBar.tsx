@@ -4,6 +4,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { getReactionDetails, type ReactionGroup } from "@/lib/matrix";
 import type { ReactionDetail } from "@bindings/ReactionDetail";
 import { useFlag } from "@/featureFlags";
+import { cn } from "@/lib/utils";
 import { EmojiPicker } from "./EmojiPicker";
 import { WhoReactedDialog } from "./WhoReactedDialog";
 import { ReactionChip } from "./ReactionChip";
@@ -71,6 +72,8 @@ function ScopedReactionBar({
   const [detailsByKey, setDetailsByKey] = useState<Record<string, ReactionDetail[]>>({});
   const [detailErrorsByKey, setDetailErrorsByKey] = useState<Record<string, boolean>>({});
   const [modalKey, setModalKeyState] = useState<string | null>(null);
+  // Keep the contextual target in layout until modal focus has returned.
+  const [detailsVisibleKey, setDetailsVisibleKey] = useState<string | null>(null);
   const [tooltipKey, setTooltipKeyState] = useState<string | null>(null);
   // Keep the synchronous request lifecycle in refs and use a per-key
   // generation to prevent duplicate requests and discard responses invalidated
@@ -208,6 +211,7 @@ function ScopedReactionBar({
   const chips = reactions.map((reaction) => {
     function openDetails(trigger: HTMLButtonElement) {
       returnFocusRef.current = trigger;
+      setDetailsVisibleKey(reaction.key);
       setModalKey(reaction.key);
       setTooltipKey(null);
       loadDetails(reaction);
@@ -236,7 +240,7 @@ function ScopedReactionBar({
     return (
       <span
         key={reaction.key}
-        className="flex min-w-0 max-w-full flex-wrap items-center gap-1"
+        className="group/reaction flex min-w-0 max-w-full flex-wrap items-center gap-1"
         onMouseLeave={() => clearDetails(reaction.key)}
         onBlur={(event) => {
           const nextTarget = event.relatedTarget;
@@ -274,7 +278,11 @@ function ScopedReactionBar({
         <button
           type="button"
           aria-label={`View all ${reaction.count} reactions for ${reaction.key}`}
-          className="sr-only focus:not-sr-only focus:flex focus:min-h-11 focus:min-w-11 focus:items-center focus:rounded-full focus:border focus:px-2 focus:text-xs"
+          className={cn(
+            "sr-only group-focus-within/reaction:not-sr-only group-focus-within/reaction:flex group-focus-within/reaction:min-h-11 group-focus-within/reaction:min-w-11 group-focus-within/reaction:items-center group-focus-within/reaction:rounded-full group-focus-within/reaction:border group-focus-within/reaction:px-2 group-focus-within/reaction:text-xs",
+            detailsVisibleKey === reaction.key &&
+              "not-sr-only flex min-h-11 min-w-11 items-center rounded-full border px-2 text-xs",
+          )}
           onClick={(event) => {
             event.stopPropagation();
             openDetails(event.currentTarget);
@@ -337,6 +345,7 @@ function ScopedReactionBar({
               groupRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)");
             (fallback ?? groupRef.current)?.focus();
           }
+          setDetailsVisibleKey(null);
         }}
       />
     </TooltipProvider>

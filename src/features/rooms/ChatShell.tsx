@@ -64,6 +64,7 @@ import { useRoomSendQueueBarrier } from "./useRoomSendQueueBarrier";
 import { PollComposerControls } from "./PollComposerControls";
 import { PollRecoveryTray } from "./PollRecoveryTray";
 import { ComposerSendButton } from "./ComposerSendButton";
+import { ComposerAttachmentPreview } from "./ComposerAttachmentPreview";
 import { NoMessagesState, NoRoomSelectedState } from "./ChatEmptyState";
 import { FollowingParticipants } from "./FollowingParticipants";
 
@@ -983,44 +984,14 @@ export function ChatShell({
       )}
 
       {!roomMutationsBlocked && visiblePendingAttachment && (
-        <div className="flex flex-col gap-2 px-4 pb-2">
-          <div className="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-[13px]">
-            <span className="truncate text-foreground">{visiblePendingAttachment.filename}</span>
-            <input
-              type="text"
-              value={pendingAttachmentCaption}
-              onChange={(e) => setPendingAttachmentCaption(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  handleConfirmPendingAttachment();
-                } else if (e.key === "Escape") {
-                  handleCancelPendingAttachment();
-                }
-              }}
-              placeholder="Add a caption (optional)"
-              aria-label="Attachment caption"
-              className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1 text-foreground outline-none focus:border-primary-solid"
-            />
-            <button
-              type="button"
-              aria-label="Send attachment"
-              onClick={handleConfirmPendingAttachment}
-              disabled={!sendGate.canSubmit()}
-              className="shrink-0 rounded bg-primary-solid px-2.5 py-1 text-primary-foreground hover:opacity-90"
-            >
-              Send
-            </button>
-            <button
-              type="button"
-              aria-label="Cancel attachment"
-              onClick={handleCancelPendingAttachment}
-              className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent"
-            >
-              <X size={14} />
-            </button>
-          </div>
-        </div>
+        <ComposerAttachmentPreview
+          filename={visiblePendingAttachment.filename}
+          caption={pendingAttachmentCaption}
+          onCaptionChange={setPendingAttachmentCaption}
+          onConfirm={handleConfirmPendingAttachment}
+          onCancel={handleCancelPendingAttachment}
+          disabled={!sendGate.canSubmit()}
+        />
       )}
 
       <PollRecoveryTray key={room.room_id} roomId={room.room_id} />

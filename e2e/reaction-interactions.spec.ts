@@ -191,6 +191,9 @@ for (const layout of ["bubble", "discord", "irc"]) {
         expect(detailBounds!.width).toBeGreaterThanOrEqual(44);
         await details.press("Enter");
         await expect(dialog).toBeVisible();
+        await expect
+          .poll(() => dialog.evaluate((element) => element.contains(document.activeElement)))
+          .toBe(true);
         await page.keyboard.press("Escape");
         try {
           await expect(details).toBeFocused();
@@ -201,7 +204,7 @@ for (const layout of ["bubble", "discord", "irc"]) {
           );
         } catch (error) {
           if (layout === "bubble" && width === 320 && count === 1) {
-            console.info(
+            console.error(
               "reaction lifecycle diagnostic",
               await page.evaluate(() => ({
                 history: (window as unknown as { reactionDiagnostics: unknown })

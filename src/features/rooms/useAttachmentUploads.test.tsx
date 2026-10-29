@@ -53,6 +53,32 @@ describe("recorded upload ownership", () => {
     });
   });
 
+  it("rejects preflight from the prior account even when the room id is unchanged", async () => {
+    mocks.polish = true;
+    let finish!: (size: number) => void;
+    mocks.getMediaConfig.mockReturnValue(
+      new Promise<number>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    mocks.sendAttachment.mockClear();
+    const { result, rerender } = renderHook(
+      ({ account }) => useAttachmentUploads("!voice:localhost", undefined, account),
+      { initialProps: { account: "@a:localhost" } },
+    );
+    let sent!: Promise<boolean>;
+    act(() => {
+      sent = result.current.handleAttachFile(file(), undefined, voice);
+    });
+    rerender({ account: "@b:localhost" });
+    await act(async () => {
+      finish(1024 * 1024);
+      expect(await sent).toBe(false);
+    });
+    expect(mocks.sendAttachment).not.toHaveBeenCalled();
+    expect(result.current.uploads).toHaveLength(0);
+  });
+
   it("does not start an upload when preflight resolves after logout", async () => {
     mocks.polish = true;
     let finish!: (size: number) => void;
