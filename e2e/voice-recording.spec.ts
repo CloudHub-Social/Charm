@@ -104,7 +104,7 @@ test("one integrated composer retains its draft through voice preview, retry and
     };
   });
   const shell = page.getByTestId("composer-shell");
-  const editor = shell.locator('[contenteditable="true"]');
+  const editor = shell.getByRole("textbox", { name: "Message Voice Room", exact: true });
   await editor.fill("Private text remains while voice owns send");
   await editor.evaluate((element) => element.setAttribute("data-composer-owner", "retained"));
   const start = shell.getByRole("button", { name: "Record voice message", exact: true });
@@ -198,7 +198,9 @@ test("staged drops and pastes wait behind voice without locking its send or losi
     };
   });
   const shell = page.getByTestId("composer-shell");
-  const editor = shell.locator('[contenteditable="true"]');
+  // ProseMirror may briefly create an unlabelled editable paste buffer.
+  const editor = shell.getByRole("textbox", { name: "Message Voice Room", exact: true });
+  await expect(editor).toHaveCount(1);
   await editor.fill("Keep the text draft and both media owners");
   await shell.getByRole("button", { name: "Record voice message", exact: true }).click();
   await expect(page.getByLabel("Recording duration")).not.toHaveText("0:00");
@@ -245,6 +247,7 @@ test("staged drops and pastes wait behind voice without locking its send or losi
   });
   expect(clipboard.files).toBe(1);
   expect(clipboard.type).toBe("image/png");
+  await expect(editor).toHaveCount(1);
   await expect(attachment, JSON.stringify(clipboard)).toBeDisabled();
   await expect(sendVoice).toBeEnabled();
   await editor.press("Enter");
