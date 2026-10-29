@@ -1159,7 +1159,10 @@ export function ChatShell({
                 key={`${currentUserId}:${room.room_id}`}
                 presentation="composer"
                 mobile={layout === "mobile"}
-                disabled={sendGate.externalBusy || visiblePendingAttachment !== null}
+                disabled={
+                  sendGate.externalBusy ||
+                  (visiblePendingAttachment !== null && !sendGate.voiceBusy)
+                }
                 onStart={sendGate.startVoice}
                 canSend={sendGate.canSendVoice}
                 onBusyChange={sendGate.updateVoice}

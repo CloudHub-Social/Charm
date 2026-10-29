@@ -156,6 +156,30 @@ PR606 custody. It neither verifies current main nor authorizes a preview bypass,
 production change or merge. Protected service/target/startup reconciliation remains
 with that existing backend owner.
 
+At `d7d4614f6631217b924d5c5af0dde1924861f730`, Quality 40908242033 passed
+all 2,348 unit tests, lint/format/typecheck/coverage/knip/build, 235 browser cases
+with 34 skips and no reported retry/flake, the no-capture witness, Storybook/axe
+and both snapshot consumers. Coverage was statements86.85/branches85.01/
+functions80.67/lines89.06. CodeQL40908242020, docs40908242032 and the checklist
+passed; current Snapshot Testing was SUCCESS. The feature-doc comparison job
+123573150940 did not establish any mismatch: after starting 33 comparisons it
+received a shutdown signal at16:14:06Z. Provider annotation explicitly reports
+that the hosted runner lost communication; the run stayed on attempt1 and failed
+at16:58:43Z. The underlying host/network cause is unavailable, not inferred as
+a code assertion or manual cancellation. No baseline is refreshed for this event.
+
+Sentry2550587 then identified a genuine coupled lockout when a drop/paste stages
+a file during voice ownership: the file waits on voice, but pending-file state
+also disabled voice send. Pending files now prevent starting a new voice session
+without disabling the session already owning send. A real-MediaRecorder browser
+regression stages a drop during recording and a paste during preview, retains the
+text, requires voice send enabled while attachment send waits, then explicitly
+sends voice followed by the retained file in the same room. The new capture needs
+its own snapshot decision. This repair requires fresh exact-head hosted CI;
+the new source push naturally requalifies the gallery rather than rerunning the
+obsolete failed run broadly. Preview40908242116 independently returned the same
+archived-upstream HTTP503 at16:07:32Z and remains with PR606.
+
 Implementation is in progress, not yet qualified. Exact-head hosted frontend,
 browser, security, axe, current screenshots and substantive review dispositions
 must pass. Existing gallery candidates and snapshot approvals are historical;
