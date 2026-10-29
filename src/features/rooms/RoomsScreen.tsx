@@ -24,7 +24,7 @@ import type {
 } from "@/features/shell/navigationState";
 import { ActivityView } from "@/features/activity/ActivityView";
 import { activityAttentionCount } from "@/features/activity/activityModel";
-import { useAdaptiveLayout } from "@/features/shell/useAdaptiveLayout";
+import { useAdaptiveLayout, useAdaptiveLayoutState } from "@/features/shell/useAdaptiveLayout";
 import { useBadgeListener } from "@/features/shell/useBadgeListener";
 import {
   acceptInvite,
@@ -517,7 +517,18 @@ export function RoomsScreen({
   // needing `activeRoomId` to change.
   const settingsSection = useAtomValue(settingsOpenAtom);
   const roomSettingsTarget = useAtomValue(roomSettingsAtom);
+  const [membersDrawerOpen, setMembersDrawerOpen] = useAtom(
+    activeRoom ? membersDrawerOpenAtomFamily(activeRoom.room_id) : noRoomMembersDrawerOpenAtom,
+  );
+  const [pinnedMessagesDrawerOpen, setPinnedMessagesDrawerOpen] = useAtom(
+    activeRoom
+      ? pinnedMessagesDrawerOpenAtomFamily(activeRoom.room_id)
+      : noRoomPinnedMessagesDrawerOpenAtom,
+  );
   const layout = useAdaptiveLayout();
+  const { width } = useAdaptiveLayoutState();
+  const mediumContextVisible =
+    uxRefreshEnabled && width === "medium" && (membersDrawerOpen || pinnedMessagesDrawerOpen);
   // On mobile, the active room is only actually on-screen while `AppShell`
   // is showing its detail view — the Chats/People tabs show a list instead,
   // with the "active" room still selected but not visible. Without this,
@@ -531,6 +542,7 @@ export function RoomsScreen({
         (primaryDestination !== "activity" || !uxRefreshEnabled) &&
         !settingsSection &&
         !roomSettingsTarget &&
+        !mediumContextVisible &&
         document.hasFocus() &&
         (layout === "desktop" || mobileView === "detail");
       setFocusedRoom(isShowingChat ? focusedRoomId : null).catch(logAndIgnore);
@@ -544,6 +556,7 @@ export function RoomsScreen({
     };
   }, [
     focusedRoomId,
+    mediumContextVisible,
     settingsSection,
     roomSettingsTarget,
     layout,
@@ -713,14 +726,6 @@ export function RoomsScreen({
     !activeRoomStateFetching &&
     !activeRoomStateRefetchFailed &&
     authoritativeRoomStateResolved;
-  const [membersDrawerOpen, setMembersDrawerOpen] = useAtom(
-    activeRoom ? membersDrawerOpenAtomFamily(activeRoom.room_id) : noRoomMembersDrawerOpenAtom,
-  );
-  const [pinnedMessagesDrawerOpen, setPinnedMessagesDrawerOpen] = useAtom(
-    activeRoom
-      ? pinnedMessagesDrawerOpenAtomFamily(activeRoom.room_id)
-      : noRoomPinnedMessagesDrawerOpenAtom,
-  );
   // The members drawer is desktop-only (mobile has no room besides the
   // active one to show it alongside — see `AppShell`'s non-goals). Reset
   // only on the desktop -> mobile *transition* (tracked via
@@ -947,7 +952,8 @@ export function RoomsScreen({
               // a ref that had to be re-populated after that remount.
               onJumpToMessage={(eventId) => {
                 setJumpTarget({ roomId: activeRoom.room_id, eventId });
-                if (layout === "mobile") setPinnedMessagesDrawerOpen(false);
+                if (layout === "mobile" || (uxRefreshEnabled && width === "medium"))
+                  setPinnedMessagesDrawerOpen(false);
               }}
             />
           ) : activeRoom && membersDrawerOpen ? (

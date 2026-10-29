@@ -9,11 +9,13 @@ export function PollComposerControls({
   mode,
   mobile,
   mutationsBlocked,
+  startSend,
 }: {
   roomId: string;
   mode: ComposerMode;
   mobile: boolean;
   mutationsBlocked: boolean;
+  startSend?: () => (() => void) | null;
 }) {
   const enabled = useFlag("polls");
   const [open, setOpen] = useState(false);
@@ -32,6 +34,7 @@ export function PollComposerControls({
         open={open}
         roomId={roomId}
         mutationsBlocked={mutationsBlocked}
+        startSend={startSend}
         onOpenChange={setOpen}
       />
     </>

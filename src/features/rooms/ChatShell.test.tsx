@@ -58,16 +58,27 @@ vi.mock("./VoiceRecorder", () => ({
   VoiceRecorder: ({
     mobile,
     onCaptureChange,
+    onBusyChange,
   }: {
     mobile: boolean;
     onCaptureChange?: (capturing: boolean) => void;
+    onBusyChange?: (busy: boolean) => void;
   }) => {
-    useEffect(() => () => onCaptureChange?.(false), [onCaptureChange]);
+    useEffect(
+      () => () => {
+        onCaptureChange?.(false);
+        onBusyChange?.(false);
+      },
+      [onCaptureChange, onBusyChange],
+    );
     return (
       <button
         type="button"
         data-testid="voice-gesture-mode"
-        onClick={() => onCaptureChange?.(true)}
+        onClick={() => {
+          onCaptureChange?.(true);
+          onBusyChange?.(true);
+        }}
       >
         {mobile ? "mobile" : "desktop"}
       </button>
@@ -314,6 +325,7 @@ vi.mock("./Composer", () => ({
   Composer: forwardRef(function Composer(
     props: {
       placeholder: string;
+      canSubmit?: () => boolean;
       onSubmit: (content: {
         body: string;
         formattedBody: string | null;
@@ -326,6 +338,7 @@ vi.mock("./Composer", () => ({
   ) {
     const [value, setValue] = useState("");
     const commit = () => {
+      if (props.canSubmit?.() === false) return;
       const trimmed = value.trim();
       if (!trimmed) return;
       if (trimmed.startsWith("/")) {

@@ -6,6 +6,7 @@ import { membersDrawerOpenAtomFamily, roomSettingsAtom } from "@/features/room-i
 import type { RoomSummary } from "@/lib/matrix";
 
 const mockUseAdaptiveLayout = vi.fn(() => "desktop");
+const mockAdaptiveWidth = vi.fn(() => "wide");
 const mockUseFlag = vi.fn(() => true);
 const mockUseFeatureFlagPersistenceVersion = vi.fn(() => 0);
 const mockUseFeatureFlagPersistenceSettled = vi.fn(() => true);
@@ -23,6 +24,9 @@ const mockUseRoomDetails = vi.fn((roomId: string | null, refetchOnMount = false)
 });
 vi.mock("@/features/shell/useAdaptiveLayout", () => ({
   useAdaptiveLayout: () => mockUseAdaptiveLayout(),
+  useAdaptiveLayoutState: () => ({
+    width: mockUseAdaptiveLayout() === "mobile" ? "compact" : mockAdaptiveWidth(),
+  }),
 }));
 
 vi.mock("@/featureFlags", () => ({
@@ -313,6 +317,7 @@ function room(overrides: Partial<RoomSummary>): RoomSummary {
 
 beforeEach(() => {
   mockUseAdaptiveLayout.mockReset().mockReturnValue("desktop");
+  mockAdaptiveWidth.mockReset().mockReturnValue("wide");
   mockUseFlag.mockReset().mockReturnValue(true);
   mockUseFeatureFlagPersistenceVersion.mockReset().mockReturnValue(0);
   mockUseFeatureFlagPersistenceSettled.mockReset().mockReturnValue(true);
@@ -497,6 +502,31 @@ describe("RoomsScreen", () => {
     expect(
       screen.queryByRole("button", { name: `accept:${invite.room_id}` }),
     ).not.toBeInTheDocument();
+  });
+
+  it("updates native focus when a visible context panel replaces chat at medium width", async () => {
+    const focus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const store = createStore();
+    const ui = () => (
+      <Provider store={store}>
+        <RoomsScreen
+          currentUserId="@me:example.org"
+          deepLinkRoomId={null}
+          onDeepLinkConsumed={() => {}}
+          onLoggedOut={() => {}}
+        />
+      </Provider>
+    );
+    const view = render(ui());
+    await screen.findByText("chat-content:!a:example.org");
+    await waitFor(() => expect(setFocusedRoom).toHaveBeenLastCalledWith("!a:example.org"));
+    act(() => store.set(membersDrawerOpenAtomFamily("!a:example.org"), true));
+    mockAdaptiveWidth.mockReturnValue("medium");
+    view.rerender(ui());
+    await waitFor(() => expect(setFocusedRoom).toHaveBeenLastCalledWith(null));
+    act(() => store.set(membersDrawerOpenAtomFamily("!a:example.org"), false));
+    await waitFor(() => expect(setFocusedRoom).toHaveBeenLastCalledWith("!a:example.org"));
+    focus.mockRestore();
   });
 
   it("auto-selects the first room and tells Rust it has focus", async () => {
@@ -1033,7 +1063,7 @@ describe("RoomsScreen", () => {
       />,
     );
     await screen.findByText("chat-content:!room:example.org");
-
+    fireEvent.click(screen.getByRole("button", { name: "back-to-chats" }));
     fireEvent.click(screen.getByRole("button", { name: "Spaces" }));
 
     expect(screen.getByRole("heading", { name: /^Spaces$/ })).toBeInTheDocument();

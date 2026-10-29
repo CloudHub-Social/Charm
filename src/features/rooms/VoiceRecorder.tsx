@@ -9,6 +9,8 @@ interface VoiceRecorderProps {
   presentation?: "panel" | "composer";
   /** External text/upload send ownership; never starts capture or sends while busy. */
   disabled?: boolean;
+  onStart?: () => boolean;
+  canSend?: () => boolean;
   /** Includes preview and send, so the integrator can retain but suspend the text editor. */
   onBusyChange?: (busy: boolean) => void;
   onSend: (file: File, metadata: VoiceMessageMetadata) => Promise<boolean>;
@@ -20,6 +22,8 @@ export function VoiceRecorder({
   mobile,
   presentation = "panel",
   disabled = false,
+  onStart,
+  canSend,
   onBusyChange,
   onSend,
   onClearFailedUpload,
@@ -72,8 +76,15 @@ export function VoiceRecorder({
   const buttonClass =
     "min-h-11 min-w-11 rounded-md px-3 text-sm hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50";
 
+  async function startRecording() {
+    const started = await recorder.start();
+    // Unsupported/denied capture can finish in the initiating event batch.
+    // Release the synchronous claim even if no busy render was committed.
+    if (started === false && mounted.current) onBusyChange?.(false);
+  }
+
   async function send() {
-    if (!recorder.preview || sendingRef.current || disabled) return;
+    if (!recorder.preview || sendingRef.current || disabled || canSend?.() === false) return;
     sendingRef.current = true;
     setSending(true);
     setSendError(false);
@@ -113,7 +124,9 @@ export function VoiceRecorder({
       aria-label="Voice message"
       aria-busy={sending}
       className={
-        presentation === "composer" ? "min-w-0" : "mt-2 rounded-lg border border-border p-2"
+        presentation === "composer"
+          ? `min-w-0 max-w-full ${busy ? "basis-full" : "shrink-0"}`
+          : "mt-2 rounded-lg border border-border p-2"
       }
     >
       <div className="flex flex-wrap items-center gap-2">
@@ -140,16 +153,17 @@ export function VoiceRecorder({
                 return;
               }
               if (capturing) recorder.stop();
-              else void recorder.start();
+              else if (!disabled && onStart?.() !== false) void startRecording();
             }}
             onPointerDown={(event) => {
               if (disabled || capturing) return;
               if (event.button !== 0 || !event.isPrimary || pointer.current) return;
               suppressPointerClick.current = false;
               if (!mobile || event.pointerType === "mouse") return;
+              if (onStart?.() === false) return;
               pointer.current = { id: event.pointerId, x: event.clientX, cancelled: false };
               event.currentTarget.setPointerCapture(event.pointerId);
-              void recorder.start();
+              void startRecording();
             }}
             onPointerMove={(event) => {
               if (pointer.current?.id !== event.pointerId) return;

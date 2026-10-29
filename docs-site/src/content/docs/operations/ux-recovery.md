@@ -6,6 +6,51 @@ title: "Conversation UX recovery — implementation evidence"
 
 This ledger continues Specs 52 and 64 and issues #539/#526. It is not a replacement roadmap.
 
+## Post-CI single-owner P1–P5 integration
+
+The October 28 owner release supersedes component-writer negotiations with one
+coupled integration branch/PR based on post-CI main `3febfcd4380f567d9a71487b17d35f2c437e1458`
+(PR610). The original P1/P2, P3, P4 and P5 branches remain preserved inputs.
+P3 and P5 source owners explicitly acknowledged STOP; P4 was already stopped.
+P3's historical worktree is unavailable, so its current uncommitted state cannot
+be reverified. This is a verification limitation, not evidence of dirtiness or
+source loss. The remote source revision is preserved.
+
+| Input | Preserved source SHA | Integration commit |
+| --- | --- | --- |
+| P1/P2, PR601 | `1c80cef2d6fd6186b0dafa041509a80d8035e3b2` | `acd636eb72352af151a53bebea4c00199bc5ab3d` |
+| P3, PR609 | `6a32b75a8d5ecf3e3fe711ba3ec0777f782c3625` | `f360edeb687644758e450940ce046b1e0d6e49f7` |
+| P4, PR608 | `e82a72eaa99bb8f5f91f4595a8f97d9b418f8b61` | `4c113c48fe10e8a7c974a491fcc3cafd2652398f` |
+| P5, PR607 | `ebedc70a84198e0dac7998b4602b79c27bee8d1d` | `430bee05eba32b81f3754df90a308505f06aaf43` |
+| Commands, PR566 | `79b8ecfcc653419ab058b5213c0044e8f59bb42f` | `8fb537dcaef1c1bb1535af27ce958d6a5d9cec8f` |
+| Navigation, PR591 | `173448659c1b67a10d21b8efc8c08c3e525cc1fe` | Source/test accessibility hunks reconciled with the integrated tree; no additional delta. Unrelated lockfile and gallery image excluded. |
+
+Shared implementation places one voice accessory inside the existing composer,
+retains its text editor/draft through recording/preview/retry, and guards both
+Enter and imperative submit before parsing or clearing. Account/room-scoped send
+ownership is acquired synchronously before async preflight, text/command/poll or
+attachment send. Voice does not block its own upload; failed voice retries retain
+file/metadata identity. Late attachment results cannot cross account/room owners;
+blocked sends retain pending attachment state. Stop/discard and existing encryption,
+permissions, attachment transport and default-off flag rollback remain intact.
+
+Adaptive integration suppresses native focused-room notifications when a medium
+context replaces chat; selecting a pin reveals its destination. Compact Spaces
+coverage uses Back before choosing the root tab. Boundary/input capability,
+retained editor/media ownership, quiet reaction targets and original P1/P2
+containment/action assertions remain required in hosted regression qualification.
+Both coverage ratchets are preserved: functions 80.0%, branches 84.5%.
+
+Implementation is in progress, not yet qualified. Exact-head hosted frontend,
+browser, security, axe, current screenshots and substantive review dispositions
+must pass. Existing gallery candidates and snapshot approvals are historical;
+new captures require their own explicit review. Codex approval/receipt/quota is
+owner-waived, never falsely passed. PR606 backend `55a43a91` remains separately
+owned; the existing preview HTTP503 is not claimed repaired by UI integration.
+Physical phone/iPad keyboard, long-press, screen-reader, rotation/multitasking,
+native microphone and cross-client acceptance remain separate outstanding evidence.
+P6–P11 stay coordinator backlog. No local Mac verification or production change.
+
 ## Baseline
 
 Research baseline: `e08884843c387c34559c0a1f6a1d30d6cadd3bd1`.

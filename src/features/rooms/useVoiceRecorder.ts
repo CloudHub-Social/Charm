@@ -147,8 +147,8 @@ export function useVoiceRecorder() {
     }
   }
 
-  async function start() {
-    if (active.current || preparing.current || phase === "requesting") return;
+  async function start(): Promise<boolean> {
+    if (active.current || preparing.current || phase === "requesting") return false;
     discard();
     const attempt = epoch.current;
     setPhase("requesting");
@@ -174,12 +174,12 @@ export function useVoiceRecorder() {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       if (epoch.current !== attempt) {
         stream.getTracks().forEach((track) => track.stop());
-        return;
+        return false;
       }
       const pending = preparing.current;
       if (!pending || pending.context !== context) {
         stream.getTracks().forEach((track) => track.stop());
-        return;
+        return false;
       }
       pending.stream = stream;
       if (windowBlurredDuringPermission.current && !document.hasFocus()) {
@@ -187,7 +187,7 @@ export function useVoiceRecorder() {
         releaseCapture();
         setPhase("idle");
         setError("Recording was discarded when Charm went into the background.");
-        return;
+        return false;
       }
       windowBlurredDuringPermission.current = false;
       if (stopRequestedDuringPermission.current) {
@@ -195,7 +195,7 @@ export function useVoiceRecorder() {
         releaseCapture();
         setPhase("idle");
         setError("Microphone access is ready. Hold again to record.");
-        return;
+        return false;
       }
       let analyser: AnalyserNode | null = null;
       if (context) {
@@ -302,8 +302,9 @@ export function useVoiceRecorder() {
       active.current = { recorder, stream, context, timer, durationTimer, requestStop };
       recorder.start(250);
       setPhase("recording");
+      return true;
     } catch (cause) {
-      if (epoch.current !== attempt) return;
+      if (epoch.current !== attempt) return false;
       stopRequestedDuringPermission.current = false;
       releaseCapture();
       setPhase("idle");
@@ -312,6 +313,7 @@ export function useVoiceRecorder() {
           ? "Microphone access was denied. Allow it in your device or browser settings to record."
           : "Audio recording is unavailable. Check microphone access and try again.",
       );
+      return false;
     }
   }
 

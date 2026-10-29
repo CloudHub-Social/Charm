@@ -17,6 +17,7 @@ import { messageRowKey } from "./MessageRow";
 import { ReplyPreview } from "./ReplyPreview";
 import { UploadTray } from "./UploadTray";
 import { VoiceRecorder } from "./VoiceRecorder";
+import { useComposerSendGate } from "./useComposerSendGate";
 import {
   activeReplyTargetAtomFamily,
   editingEventIdAtomFamily,
@@ -208,7 +209,6 @@ export function ChatShell({
   const mobile = layout === "mobile" && (mobileChatRedesignEnabled || uxRefreshEnabled);
   const compactComposerControls = mobile || uxRefreshEnabled;
   const [showMobileFormatting, setShowMobileFormatting] = useState(false);
-  const [voiceCaptureActive, setVoiceCaptureActive] = useState(false);
   const [jumpToDateOpen, setJumpToDateOpen] = useState(false);
   const [dateJumpTarget, setDateJumpTarget] = useState<{
     eventId: string;
@@ -239,6 +239,7 @@ export function ChatShell({
     file: string | File;
     filename: string;
     roomId: string | null;
+    accountId: string;
   } | null>(null);
   const [pendingAttachmentCaption, setPendingAttachmentCaption] = useState("");
   const roomId = room?.room_id ?? "";
@@ -254,7 +255,9 @@ export function ChatShell({
   };
   const activeRoomId = room?.room_id ?? null;
   const visiblePendingAttachment =
-    pendingAttachment?.roomId === activeRoomId ? pendingAttachment : null;
+    pendingAttachment?.roomId === activeRoomId && pendingAttachment.accountId === currentUserId
+      ? pendingAttachment
+      : null;
   useEffect(() => {
     setShowMobileFormatting(false);
     if (fileDragLeaveTimerRef.current !== null) {
@@ -520,9 +523,10 @@ export function ChatShell({
     setFollowingExpanded(false);
     setPendingAttachment(null);
     setPendingAttachmentCaption("");
-  }, [activeRoomId]);
+  }, [activeRoomId, currentUserId]);
+  const sendGate = useComposerSendGate(`${currentUserId}:${activeRoomId}`, roomMutationsBlockedRef);
   const { uploads, handleAttachFile, dismissUpload, dismissFailedUploadForFile } =
-    useAttachmentUploads(activeRoomId, roomMutationsBlockedRef);
+    useAttachmentUploads(activeRoomId, roomMutationsBlockedRef, currentUserId);
   useEffect(() => {
     if (!roomMutationsBlocked || uploads.length === 0) return;
     for (const upload of uploads) dismissUpload(upload.txnId);
@@ -570,9 +574,15 @@ export function ChatShell({
   async function handleComposerSubmitAndScroll(
     content: Parameters<typeof handleComposerSubmit>[0],
   ) {
-    const wasEditing = composerMode === "edit";
-    const succeeded = await handleComposerSubmit(content);
-    if (!wasEditing && succeeded) scrollToPresentAfterOwnSend();
+    const release = sendGate.startExternal();
+    if (!release) return;
+    try {
+      const wasEditing = composerMode === "edit";
+      const succeeded = await handleComposerSubmit(content);
+      if (!wasEditing && succeeded && sendGate.isCurrent()) scrollToPresentAfterOwnSend();
+    } finally {
+      release();
+    }
   }
   // A slash command (e.g. `/me ...`, which sends an emote message the same
   // way a plain send does — see `src-tauri/src/matrix/commands.rs`) goes
@@ -585,8 +595,15 @@ export function ChatShell({
   // unconditionally would yank the user to the bottom (and mark them
   // at-bottom/read) for a command that sent nothing.
   async function handleSlashCommandAndScroll(parsed: Parameters<typeof handleSlashCommand>[0]) {
-    const succeeded = await handleSlashCommand(parsed);
-    if (isMessageSendingCommand(parsed) && succeeded) scrollToPresentAfterOwnSend();
+    const release = sendGate.startExternal();
+    if (!release) return;
+    try {
+      const succeeded = await handleSlashCommand(parsed);
+      if (isMessageSendingCommand(parsed) && succeeded && sendGate.isCurrent())
+        scrollToPresentAfterOwnSend();
+    } finally {
+      release();
+    }
   }
 
   // Files stage for an optional caption when `media_send_polish` is on;
@@ -596,24 +613,40 @@ export function ChatShell({
     // The native picker resolves asynchronously. Re-read the current gate so
     // a tombstone received while the dialog was open cannot stage or send a
     // file through the stale click handler closure.
-    if (roomMutationsBlockedRef.current) return;
-    if (!mediaSendPolishEnabled) {
-      handleAttachFile(file);
+    if (roomMutationsBlockedRef.current || !sendGate.isCurrent()) return;
+    if (!mediaSendPolishEnabled && sendGate.canSubmit()) {
+      void sendExternalAttachment(file);
       return;
     }
     const filename = typeof file === "string" ? (file.split(/[/\\]/).pop() ?? file) : file.name;
     setPendingAttachmentCaption("");
-    setPendingAttachment({ file, filename, roomId: activeRoomId });
+    setPendingAttachment({ file, filename, roomId: activeRoomId, accountId: currentUserId });
+  }
+
+  async function sendExternalAttachment(file: string | File, caption?: string) {
+    const release = sendGate.startExternal();
+    if (!release) return false;
+    try {
+      return await handleAttachFile(file, caption);
+    } finally {
+      release();
+    }
   }
 
   function handleConfirmPendingAttachment() {
-    if (roomMutationsBlocked || !pendingAttachment || pendingAttachment.roomId !== activeRoomId) {
+    if (!sendGate.canSubmit()) return;
+    if (
+      roomMutationsBlocked ||
+      !pendingAttachment ||
+      pendingAttachment.roomId !== activeRoomId ||
+      pendingAttachment.accountId !== currentUserId
+    ) {
       setPendingAttachment(null);
       setPendingAttachmentCaption("");
       return;
     }
     const caption = pendingAttachmentCaption.trim();
-    handleAttachFile(pendingAttachment.file, caption.length > 0 ? caption : undefined);
+    void sendExternalAttachment(pendingAttachment.file, caption.length > 0 ? caption : undefined);
     setPendingAttachment(null);
     setPendingAttachmentCaption("");
   }
@@ -624,7 +657,7 @@ export function ChatShell({
   }
 
   async function handleAttachClick() {
-    if (voiceCaptureActive) return;
+    if (!sendGate.canSubmit()) return;
     if (isWebBuild()) {
       attachmentInputRef.current?.click();
       return;
@@ -949,7 +982,7 @@ export function ChatShell({
         </output>
       )}
 
-      {mediaSendPolishEnabled && !roomMutationsBlocked && visiblePendingAttachment && (
+      {!roomMutationsBlocked && visiblePendingAttachment && (
         <div className="flex flex-col gap-2 px-4 pb-2">
           <div className="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-[13px]">
             <span className="truncate text-foreground">{visiblePendingAttachment.filename}</span>
@@ -973,6 +1006,7 @@ export function ChatShell({
               type="button"
               aria-label="Send attachment"
               onClick={handleConfirmPendingAttachment}
+              disabled={!sendGate.canSubmit()}
               className="shrink-0 rounded bg-primary-solid px-2.5 py-1 text-primary-foreground hover:opacity-90"
             >
               Send
@@ -1069,7 +1103,7 @@ export function ChatShell({
           />
           <div
             className={cn(
-              "flex items-end border border-border bg-card",
+              "flex min-w-0 flex-wrap items-end border border-border bg-card",
               mobile ? "gap-1 rounded-2xl p-1" : "gap-2 rounded-lg p-2",
               uxRefreshEnabled &&
                 "gap-1 rounded-[20px] border-[var(--ux-shell-border)] bg-[var(--ux-composer-bg)] p-1.5 shadow-[0_12px_35px_rgba(0,0,0,0.16)]",
@@ -1079,7 +1113,7 @@ export function ChatShell({
             <button
               aria-label="Attach"
               onClick={handleAttachClick}
-              disabled={voiceCaptureActive}
+              disabled={!sendGate.canSubmit()}
               className={cn(
                 "flex shrink-0 items-center justify-center text-muted-foreground hover:bg-accent disabled:cursor-not-allowed",
                 compactComposerControls ? "size-11 rounded-full" : "size-9 rounded-md",
@@ -1092,11 +1126,12 @@ export function ChatShell({
               roomId={roomId}
               mode={composerMode}
               mobile={mobile}
-              mutationsBlocked={roomMutationsBlocked}
+              mutationsBlocked={roomMutationsBlocked || sendGate.voiceBusy}
+              startSend={sendGate.startExternal}
             />
             <Composer
               accountId={currentUserId}
-              key={`${room.room_id}-${editingEventId ?? "new"}`}
+              key={`${currentUserId}:${room.room_id}:${editingEventId ?? "new"}`}
               ref={composerRef}
               roomId={room.room_id}
               mode={composerMode}
@@ -1108,6 +1143,7 @@ export function ChatShell({
                   : undefined
               }
               placeholder={mobile ? "Message" : `Message ${displayName(room.room_id, room.name)}`}
+              canSubmit={sendGate.canSubmit}
               onSubmit={handleComposerSubmitAndScroll}
               onSlashCommand={handleSlashCommandAndScroll}
               onEscape={() => {
@@ -1143,19 +1179,27 @@ export function ChatShell({
               trimmed text emptiness is the only signal. */}
             <ComposerSendButton
               mobile={compactComposerControls}
-              disabled={isComposerEmpty}
+              disabled={isComposerEmpty || !sendGate.canSubmit()}
               onClick={() => composerRef.current?.submit()}
             />
+            {voiceRecordingEnabled && !roomMutationsBlocked && (
+              <VoiceRecorder
+                key={`${currentUserId}:${room.room_id}`}
+                presentation="composer"
+                mobile={layout === "mobile"}
+                disabled={sendGate.externalBusy || visiblePendingAttachment !== null}
+                onStart={sendGate.startVoice}
+                canSend={sendGate.canSendVoice}
+                onBusyChange={sendGate.updateVoice}
+                onSend={(file, metadata) =>
+                  sendGate.canSendVoice()
+                    ? handleAttachFile(file, undefined, metadata)
+                    : Promise.resolve(false)
+                }
+                onClearFailedUpload={dismissFailedUploadForFile}
+              />
+            )}
           </div>
-          {voiceRecordingEnabled && !roomMutationsBlocked && (
-            <VoiceRecorder
-              key={`${currentUserId}:${room.room_id}`}
-              mobile={layout === "mobile"}
-              onSend={(file, metadata) => handleAttachFile(file, undefined, metadata)}
-              onClearFailedUpload={dismissFailedUploadForFile}
-              onCaptureChange={setVoiceCaptureActive}
-            />
-          )}
         </div>
       )}
       {!mobile && !uxRefreshEnabled && participants.length > 0 && (

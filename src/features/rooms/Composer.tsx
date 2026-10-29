@@ -85,6 +85,8 @@ interface ComposerProps {
   /** Preloaded editor HTML when entering edit mode; ignored otherwise. */
   initialHtml?: string;
   placeholder: string;
+  /** Checked before parsing, callbacks or clearing the account/room draft. */
+  canSubmit?: () => boolean;
   onSubmit: (content: SerializedComposerContent) => void;
   /** A resolved slash command was typed as plain text and submitted. */
   onSlashCommand: (command: ParsedSlashCommand) => void;
@@ -204,6 +206,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     mode,
     initialHtml,
     placeholder,
+    canSubmit,
     onSubmit,
     onSlashCommand,
     onEscape,
@@ -539,7 +542,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   }, [editor]);
 
   function submit() {
-    if (!editor) return;
+    if (!editor || canSubmit?.() === false) return;
     const rawPlainText = resolveEditorPlainShortcodes(editor);
     if (!rawPlainText.trim()) return;
 

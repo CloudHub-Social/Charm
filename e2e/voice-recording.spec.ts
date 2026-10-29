@@ -66,3 +66,102 @@ for (const enabled of [false, true]) {
     await expect(page.getByText("No messages yet", { exact: true })).toBeVisible();
   });
 }
+
+test("one integrated composer retains its draft through voice preview, retry and adaptive resize", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "charm:featureFlags",
+      JSON.stringify({
+        state: { overrides: { voice_recording: true, ux_refresh_v1: true, composer_parity: true } },
+        updatedAt: Date.now(),
+      }),
+    );
+  });
+  await page.addInitScript(installMockTauri, {
+    userId: "@voice:localhost",
+    deviceId: "VOICE_DEVICE",
+    room: ROOM,
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: ROOM.name }).click();
+  await page.evaluate(() => {
+    const original = window.__TAURI_INTERNALS__.invoke;
+    const evidence = {
+      voice: [] as Array<{ room: unknown; metadata: unknown; bytes: unknown }>,
+      text: 0,
+    };
+    (window as unknown as { __integratedVoice: typeof evidence }).__integratedVoice = evidence;
+    window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+      if (command === "send_message") evidence.text += 1;
+      if (command === "send_attachment" && args?.voice) {
+        evidence.voice.push({ room: args.roomId, metadata: args.voice, bytes: args.recording });
+        if (evidence.voice.length === 1) throw new Error("Synthetic voice retry");
+      }
+      return original(command, args);
+    };
+  });
+  const shell = page.getByTestId("composer-shell");
+  const editor = shell.locator('[contenteditable="true"]');
+  await editor.fill("Private text remains while voice owns send");
+  await editor.evaluate((element) => element.setAttribute("data-composer-owner", "retained"));
+  const start = shell.getByRole("button", { name: "Record voice message", exact: true });
+  await expect(shell.locator('section[aria-label="Voice message"]')).toHaveCount(1);
+  await start.click();
+  await expect(page.getByLabel("Recording duration")).not.toHaveText("0:00");
+  await editor.press("Enter");
+  await expect(editor).toContainText("Private text remains while voice owns send");
+  await expect(shell.getByRole("button", { name: "Attach", exact: true })).toBeDisabled();
+  await shell.getByRole("button", { name: "Stop recording", exact: true }).click();
+  const preview = shell.getByLabel("Voice message preview");
+  await expect(preview).toHaveAttribute("src", /^blob:/);
+  await preview.evaluate((element) => element.setAttribute("data-voice-owner", "retained"));
+  for (const width of [1199, 834, 768, 767, 390, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    await expect(editor).toHaveAttribute("data-composer-owner", "retained");
+    await expect(preview).toHaveAttribute("data-voice-owner", "retained");
+    await expect(editor).toContainText("Private text remains while voice owns send");
+    await expect(page.locator("body")).toHaveJSProperty("scrollWidth", width);
+    const bounds = await preview.boundingBox();
+    expect(bounds).not.toBeNull();
+    expect(bounds!.x).toBeGreaterThanOrEqual(0);
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
+  }
+  await shell.getByRole("button", { name: "Send voice message", exact: true }).click();
+  await expect(
+    shell.getByRole("button", { name: "Retry voice message", exact: true }),
+  ).toBeVisible();
+  await expect(editor).toContainText("Private text remains while voice owns send");
+  await captureSnapshot(page, "integrated-composer-voice-retry-draft");
+  await shell.getByRole("button", { name: "Retry voice message", exact: true }).click();
+  await expect(preview).toHaveCount(0);
+  await expect(start).toBeVisible();
+  const evidence = await page.evaluate(
+    () =>
+      (
+        window as unknown as {
+          __integratedVoice: {
+            voice: Array<{ room: unknown; metadata: unknown; bytes: unknown }>;
+            text: number;
+          };
+        }
+      ).__integratedVoice,
+  );
+  expect(evidence.voice).toHaveLength(2);
+  expect(evidence.voice[0]).toEqual(evidence.voice[1]);
+  expect(evidence.voice[0].room).toBe(ROOM.room_id);
+  expect(evidence.text).toBe(0);
+  await editor.press("Enter");
+  await expect(editor).toHaveText("");
+  await expect(
+    page.getByText("Private text remains while voice owns send", { exact: true }),
+  ).toBeVisible();
+  await start.click();
+  await expect(page.getByLabel("Recording duration")).not.toHaveText("0:00");
+  await shell.getByRole("button", { name: "Stop recording", exact: true }).click();
+  await shell.getByRole("button", { name: "Discard recording", exact: true }).click();
+  await expect(start).toBeFocused();
+  await captureSnapshot(page, "integrated-composer-voice-discard");
+});

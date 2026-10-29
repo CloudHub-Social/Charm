@@ -19,6 +19,28 @@ const capture = vi.hoisted(() => ({
 vi.mock("./useVoiceRecorder", () => ({ useVoiceRecorder: () => capture }));
 
 describe("VoiceRecorder", () => {
+  it("releases composer ownership after an immediate capture failure", async () => {
+    capture.phase = "idle";
+    capture.preview = null;
+    capture.start.mockResolvedValueOnce(false);
+    const busy = vi.fn();
+    const claim = vi.fn(() => true);
+    render(
+      <VoiceRecorder
+        mobile={false}
+        onStart={claim}
+        onBusyChange={busy}
+        onSend={vi.fn()}
+        onClearFailedUpload={vi.fn()}
+      />,
+    );
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "Record voice message" })),
+    );
+    expect(claim).toHaveBeenCalledOnce();
+    expect(busy).toHaveBeenLastCalledWith(false);
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     capture.phase = "preview";

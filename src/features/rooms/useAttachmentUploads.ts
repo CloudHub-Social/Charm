@@ -49,6 +49,7 @@ async function fileSize(file: string | File): Promise<number | null> {
 export function useAttachmentUploads(
   roomId: string | null,
   mutationsBlockedRef?: RefObject<boolean>,
+  accountId = "",
 ) {
   const [uploads, setUploads] = useState<PendingUpload[]>([]);
   const mediaSendPolishEnabled = useFlag("media_send_polish");
@@ -69,6 +70,12 @@ export function useAttachmentUploads(
   const uploadAbortControllers = useRef<Map<string, AbortController>>(new Map());
   const failedVoiceUploads = useRef<WeakMap<File, string>>(new WeakMap());
   const ownerGeneration = useRef(0);
+  const ownerScope = `${accountId}:${roomId}`;
+  const ownerScopeRef = useRef(ownerScope);
+  if (ownerScopeRef.current !== ownerScope) {
+    ownerScopeRef.current = ownerScope;
+    ownerGeneration.current += 1;
+  }
   const ownerDisposed = useRef(false);
 
   useEffect(() => {
@@ -83,7 +90,7 @@ export function useAttachmentUploads(
       }
       controllers.clear();
     };
-  }, []);
+  }, [ownerScope]);
 
   useEffect(() => {
     if (!mediaSendPolishEnabled) return;
@@ -100,7 +107,7 @@ export function useAttachmentUploads(
 
   useEffect(() => {
     setUploads([]);
-  }, [roomId]);
+  }, [ownerScope]);
 
   useEffect(() => {
     const unlisten = onUploadProgress((progress) => {

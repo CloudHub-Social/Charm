@@ -304,3 +304,15 @@ Timeline gutters are measured item content. Bubbles retain their saved visual
 mode, and IRC reactions use the next line instead of crowding sender and text.
 These repairs do not promote the refresh flag or complete composer/tablet work.
 See the [implementation ledger](/operations/ux-recovery/).
+
+
+## Coupled P1–P5 integration follow-up
+
+Post-CI main PR610 is the base for one integrated containment/actions, quiet
+reaction-target, voice/text composer and adaptive-layout change. Shared send
+ownership guards drafts before clearing; medium context/native focus, pinned
+jumps and compact Spaces/Back are reconciled with existing navigation. Default-off
+flags, account/room permissions and saved preferences remain unchanged. The
+[existing UX recovery ledger](/operations/ux-recovery/) owns source mappings,
+hosted regression/security/axe/visual evidence and remaining snapshot/device gaps.
+This source integration is not full P0–P12 completion; P6–P11 remain backlog.

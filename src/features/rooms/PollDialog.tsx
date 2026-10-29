@@ -18,6 +18,7 @@ interface PollDialogProps {
   roomId: string;
   mutationsBlocked?: boolean;
   onOpenChange: (open: boolean) => void;
+  startSend?: () => (() => void) | null;
 }
 
 interface DraftOption {
@@ -35,6 +36,7 @@ export function PollDialog({
   roomId,
   mutationsBlocked = false,
   onOpenChange,
+  startSend,
 }: PollDialogProps) {
   const [question, setQuestion] = useState("");
   const [options, setOptions] = useState<DraftOption[]>(EMPTY_OPTIONS);
@@ -94,6 +96,8 @@ export function PollDialog({
       return;
     }
 
+    const release = startSend?.();
+    if (startSend && !release) return;
     const id = ++requestId.current;
     setPending(true);
     setError(null);
@@ -106,6 +110,7 @@ export function PollDialog({
     } catch {
       if (requestId.current === id) setError("The poll could not be created.");
     } finally {
+      release?.();
       if (requestId.current === id) setPending(false);
     }
   }

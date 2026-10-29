@@ -170,19 +170,22 @@ or voice send; stop/discard remain available. `onBusyChange` includes pending
 permission, capture, preview and voice send. `onCaptureChange` retains its narrower
 capture-only meaning. Preview audio fits the available width and pauses on send.
 
-This component package does **not** wire the accessory into Composer/ChatShell.
-The programme integrator owns that serial change after reconciling PRs 601 and
-566: mount exactly one recorder in the existing composer shell under the existing
-default-off `voice_recording` flag, remove the separate idle panel mount, retain
-the account/room key, and pass the existing attachment and failed-upload callbacks.
-Use stable busy callbacks to suspend competing text submission and uploads while
-retaining the editor instance, private draft, reply and pending upload state.
-Pass external send/mutation ownership through `disabled`; do not feed voice busy
-back into its own send guard. Unmount on account/room/flag changes and retain the
-existing chat-visibility context. The existing send path continues to own local
-echo, encryption, transaction IDs and uploaded media; this accessory must never
-create a second send path. No integrated completion is claimed until this wiring
-and its regression evidence exist.
+The post-CI P1–P5 integration mounts exactly one accessory inside ChatShell's
+existing composer under default-off `voice_recording`. The editor remains mounted
+through capture/preview/retry. A synchronous account/room send gate checks both
+Enter and imperative submission before parsing or clearing the private draft;
+text, slash commands, poll creation and attachment preflight cannot compete with
+voice. External send ownership disables voice start/send without disabling stop
+or discard, and voice never disables its own upload. Late file picker/preflight
+results cannot retarget a changed account/room. A blocked staged attachment is
+retained rather than cleared. Preview/retry retain the existing file, metadata,
+encryption, local echo and transaction route; no second send pipeline is added.
+
+Integrated qualification remains pending current-head hosted regressions,
+accessibility, visual review and required snapshot approvals. See the
+[existing integration ledger](/operations/ux-recovery/) for source mappings and
+exact evidence stages. Native permission prompts, physical devices and codec /
+cross-client acceptance remain separate; source integration does not prove them.
 
 Dedicated unit definitions cover pending-send exclusion, retry identity, compact
 and wide idle access, pointer/keyboard controls and permission cancellation. The

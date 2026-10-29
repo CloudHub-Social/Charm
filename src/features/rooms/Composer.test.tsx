@@ -48,6 +48,43 @@ function pasteText(editable: Element, text: string, matchFormatting = false) {
 }
 
 describe("Composer", () => {
+  it.each(["private draft", "/plain private command"])(
+    "retains blocked draft before Enter and imperative submit: %s",
+    async (text) => {
+      flags.composerParity = true;
+      const ref = createRef<ComposerHandle>();
+      const onSubmit = vi.fn();
+      const onSlashCommand = vi.fn();
+      let allowed = false;
+      render(
+        <Composer
+          ref={ref}
+          roomId="!guard:example.org"
+          mode="send"
+          placeholder="Guarded draft"
+          canSubmit={() => allowed}
+          onSubmit={onSubmit}
+          onSlashCommand={onSlashCommand}
+          onEscape={vi.fn()}
+          onTypingInput={vi.fn()}
+        />,
+      );
+      const editable = await screen.findByLabelText("Guarded draft");
+      pasteText(editable, text);
+      fireEvent.keyDown(editable, { key: "Enter" });
+      ref.current?.submit();
+      expect(editable).toHaveTextContent(text);
+      expect(onSubmit).not.toHaveBeenCalled();
+      expect(onSlashCommand).not.toHaveBeenCalled();
+      allowed = true;
+      fireEvent.keyDown(editable, { key: "Enter" });
+      await waitFor(() =>
+        expect(onSubmit.mock.calls.length + onSlashCommand.mock.calls.length).toBe(1),
+      );
+      expect(editable.textContent).toBe("");
+    },
+  );
+
   it("dispatches message slash commands while replying", async () => {
     flags.composerParity = true;
     const onSlashCommand = vi.fn().mockResolvedValue(true);
@@ -807,6 +844,6 @@ it.each(["myroomnick", "startdm"] as const)(
       action: true,
     });
     expect(onSubmit).not.toHaveBeenCalled();
-    expect(editable).toHaveTextContent("");
+    expect(editable.textContent).toBe("");
   },
 );
