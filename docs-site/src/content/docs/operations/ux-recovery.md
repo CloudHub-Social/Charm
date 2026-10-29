@@ -57,6 +57,32 @@ viewer access while proving no reaction mutation and retaining disabled Reply/Pi
 checks. A follow-up removes compact-only touch-hold gating so input modality stays
 independent of width. These follow-ups require fresh exact-head qualification.
 
+At `d5334501cd8ba55e6dac6ec19c0b2332f73fcd1a`, hosted Quality
+[40855254619](https://github.com/CloudHub-Social/Charm/actions/runs/40855254619)
+passed frontend lint, formatting, typecheck, coverage, dead-code checking and
+build, browser regressions, Storybook/axe and both snapshot upload consumers.
+CodeQL [40855254526](https://github.com/CloudHub-Social/Charm/actions/runs/40855254526)
+and documentation [40855254448](https://github.com/CloudHub-Social/Charm/actions/runs/40855254448)
+passed. Quality overall failed because three committed gallery captures lagged
+the integrated UI: voice-recording, message-actions and ux-refresh-navigation-rail.
+Their hosted candidates were visually compared with the committed images: one
+integrated voice preview replaces the separate panel, and larger reaction targets
+replace the small chips and persistent reactor label. Only those three gallery
+images are refreshed; comparison tolerances and journey assertions are unchanged.
+The gallery refresh requires its own exact-head CI; these passes belong to d5334501.
+
+All eight voice accessory story captures and representative integrated voice
+retry/discard, compact reaction and medium context captures were inspected.
+The synthetic browser media journey is not evidence of native microphone access,
+real server delivery or physical-device acceptance. Sentry snapshot set 121277
+remains unapproved; successful capture/upload jobs do not approve that set.
+Preview [40855254522](https://github.com/CloudHub-Social/Charm/actions/runs/40855254522)
+failed its deployed API proxy check with HTTP503 at 2026-10-29T10:10:17.747Z;
+this remains with the separate PR606 owner. Native Rust/iOS builds were not
+selected by the merged CI change detector, so aggregate gate success is not a
+native build pass. PR611 stays draft following the coordinator's deliberate
+ready-step cancellation; draft review/checklist exemptions do not qualify review.
+
 Implementation is in progress, not yet qualified. Exact-head hosted frontend,
 browser, security, axe, current screenshots and substantive review dispositions
 must pass. Existing gallery candidates and snapshot approvals are historical;
