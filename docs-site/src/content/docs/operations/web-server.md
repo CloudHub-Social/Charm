@@ -327,6 +327,10 @@ The release controller runs `scripts/verify-state-cutover.py` before an initial
 cutover update. The same read-only gate is mandatory immediately before the
 secure credential-install update; its receipt must show archived active spec,
 zero instances, no pending rollout and unchanged single-instance capacity.
+The release workflow runs this gate before every update, regardless of the
+cutover SHA. It permits the guarded same-revision restart described below; a
+different live revision remains blocked until a receipt-backed release
+controller has been implemented and qualified.
 
 The automatic release workflow refuses an update until the approved state bucket
 binding is present. This lets the protected merge complete without accidentally

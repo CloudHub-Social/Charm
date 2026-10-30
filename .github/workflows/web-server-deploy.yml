@@ -106,11 +106,11 @@ jobs:
           # legacy backend before the approved secure binding/copy cutover.
           python3 -c 'import sys,yaml; s=yaml.safe_load(open(sys.argv[1])); assert any(e.get("key")=="CHARM_WEB_SERVER_STATE_BUCKET" and e.get("value")=="charm-api-state-production" for c in s.get("services",[]) for e in c.get("envs",[])), "Approved R2 state bindings are not installed; no rollout requested"' /tmp/live-spec.yaml
           python3 scripts/merge-do-app-spec.py /tmp/live-spec.yaml .do/app.yaml /tmp/merged-spec.yaml "$GITHUB_SHA"
-          # Initial cross-provider authority change requires a stopped source.
-          # This reads metadata only and fails before the one update request.
-          if python3 -c 'import sys,yaml; s=yaml.safe_load(open(sys.argv[1])); sys.exit(0 if any(e.get("key")=="CHARM_WEB_SERVER_STATE_CUTOVER_SHA" and e.get("value")==sys.argv[2] for c in s.get("services",[]) for e in c.get("envs",[])) else 1)' /tmp/merged-spec.yaml "$GITHUB_SHA"; then
-            python3 scripts/verify-state-cutover.py "$DO_APP_ID" "$GITHUB_SHA"
-          fi
+          # Always establish a stopped source or the guarded same-revision
+          # authority before an update, including missing/stale cutover SHA.
+          # Other live revisions stay blocked until a receipt-backed release
+          # controller is implemented and qualified.
+          python3 scripts/verify-state-cutover.py "$DO_APP_ID" "$GITHUB_SHA"
           # Updating the spec requests the rollout itself. Do not follow it
           # with create-deployment or retry an uncertain provider response.
           doctl apps update "$DO_APP_ID" --spec /tmp/merged-spec.yaml --update-sources --wait --http-retry-max 0 --format ID --no-header

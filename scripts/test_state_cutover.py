@@ -87,6 +87,28 @@ class CutoverTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             module.validate(app, [{"id": "synthetic"}], "qualified")
         app["active_deployment"]["services"][0]["source_commit_hash"] = "qualified"
+        env = app["active_deployment"]["spec"]["services"][0]["envs"]
+        for key in ["CHARM_WEB_SERVER_STATE_BUCKET", "CHARM_WEB_SERVER_EXPECTED_SOURCE_SHA", "CHARM_WEB_SERVER_STATE_CUTOVER_SHA"]:
+            binding = next(entry for entry in env if entry["key"] == key)
+            original = binding["value"]
+            for value in [None, "", "stale"]:
+                binding["value"] = value
+                with self.assertRaises(ValueError):
+                    module.validate(app, [{"id": "synthetic"}], "qualified")
+            binding["value"] = original
+            env.remove(binding)
+            with self.assertRaises(ValueError):
+                module.validate(app, [{"id": "synthetic"}], "qualified")
+            env.append(binding)
         app["active_deployment"]["spec"]["jobs"] = [{"name": "unexpected"}]
         with self.assertRaises(ValueError):
             module.validate(app, [{"id": "synthetic"}], "qualified")
+
+    def test_workflow_always_preflights_before_update(self):
+        workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/web-server-deploy.yml").read_text()
+        preflight = '          python3 scripts/verify-state-cutover.py "$DO_APP_ID" "$GITHUB_SHA"'
+        update = '          doctl apps update "$DO_APP_ID"'
+        self.assertEqual(workflow.count(preflight), 1)
+        self.assertLess(workflow.index(preflight), workflow.index(update))
+        section = workflow[workflow.index('          python3 scripts/merge-do-app-spec.py'):workflow.index(update)]
+        self.assertNotIn("          if ", section)
