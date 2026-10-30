@@ -13,6 +13,36 @@ const UX_REFRESH_V1_ENV: &str = "CHARM_FEATURE_UX_REFRESH_V1";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Presence always blocks normal startup, including a misspelled value.
+    // Inspection reads only source metadata and exits on both outcomes before
+    // destination access, migration, telemetry, background tasks or listener.
+    if let Some(mode) = std::env::var_os("CHARM_WEB_SERVER_INVENTORY_INSPECT_ONLY") {
+        let category = if mode == "1"
+            && charm_web_server::release_guard::check_environment().is_ok()
+        {
+            match charm_web_server::state_storage::inspect_source().await {
+                Ok(()) => "state inventory within bounds",
+                Err(error) => match error.as_str() {
+                    "state inventory rejected unexpected object path" => {
+                        "state inventory rejected unexpected object path"
+                    }
+                    "state inventory rejected oversized object" => {
+                        "state inventory rejected oversized object"
+                    }
+                    "state inventory exceeds total size bound" => "state inventory exceeds total size bound",
+                    "state inventory exceeds object count bound" => {
+                        "state inventory exceeds object count bound"
+                    }
+                    _ => "state inventory inspection unavailable",
+                },
+            }
+        } else {
+            "state inventory inspection unavailable"
+        };
+        eprintln!("{category}");
+        std::process::exit(1);
+    }
+
     // Fail before telemetry, credentials, storage or background tasks initialize.
     charm_web_server::release_guard::check_environment()?;
 

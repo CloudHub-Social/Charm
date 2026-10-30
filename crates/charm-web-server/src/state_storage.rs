@@ -52,6 +52,15 @@ pub fn destination() -> Result<Option<Arc<dyn ObjectStore>>, String> {
     build(PREFIX, true).map(Some)
 }
 
+/// List the approved session source only; do not open destination or read bodies.
+pub async fn inspect_source() -> Result<(), String> {
+    if required("CHARM_WEB_SERVER_SPACES_BUCKET")? != "charm-web-server-sessions" {
+        return Err("state migration source differs from approved bucket".into());
+    }
+    let sessions = build("CHARM_WEB_SERVER_SPACES_", false)?;
+    crate::state_migration::inspect_source(sessions.as_ref()).await
+}
+
 /// Runs before listeners, sweepers, session restoration or writer activation.
 /// The deployment controller must attest a stopped source at this exact revision.
 pub async fn prepare() -> Result<(), String> {

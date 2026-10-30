@@ -305,6 +305,13 @@ Inventory rejection reports a fixed category for an unexpected object path,
 oversized object, total size or object count; it does not report object names,
 contents or metadata values. If multiple conditions apply, the first checked
 category is reported. Rejection occurs before the source inventory is copied.
+For a separately qualified inspection, setting
+`CHARM_WEB_SERVER_INVENTORY_INSPECT_ONLY=1` makes the process check the
+qualified source revision and list the session source, print one fixed
+category, and exit without opening the destination or starting the service.
+Any other value also stops startup. This mode does not read object bodies or
+alter the migration bounds; deploying it requires its own reviewed execution
+plan and does not establish that a subsequent cutover will pass.
 
 For the ten-session planning scenario, doubling the estimated operations for that
 single retry remains below one million Class A and seven million Class B requests

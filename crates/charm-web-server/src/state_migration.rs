@@ -49,6 +49,11 @@ async fn inventory(store: &dyn ObjectStore) -> Result<Vec<ObjectMeta>, String> {
     Ok(entries)
 }
 
+/// Inspect source inventory only. No destination is accepted or accessed.
+pub async fn inspect_source(store: &dyn ObjectStore) -> Result<(), String> {
+    inventory(store).await.map(|_| ())
+}
+
 fn same_inventory(a: &[ObjectMeta], b: &[ObjectMeta]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(x,y)| {
         x.location == y.location && x.size == y.size && x.e_tag == y.e_tag
@@ -187,6 +192,10 @@ mod tests {
             migrate(&source, &crypto, &destination).await.unwrap_err(),
             "state inventory exceeds object count bound"
         );
+        assert_eq!(
+            inspect_source(&source).await.unwrap_err(),
+            "state inventory exceeds object count bound"
+        );
         assert!(inventory(&destination).await.unwrap().is_empty());
         assert!(!completed(&destination).await.unwrap());
     }
@@ -213,7 +222,25 @@ mod tests {
             migrate(&source, &crypto, &destination).await.unwrap_err(),
             "state inventory rejected oversized object"
         );
+        assert_eq!(
+            inspect_source(&source).await.unwrap_err(),
+            "state inventory rejected oversized object"
+        );
         assert!(inventory(&destination).await.unwrap().is_empty());
         assert!(!completed(&destination).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn source_inspection_reports_fixed_categories() {
+        let source = InMemory::new();
+        assert!(inspect_source(&source).await.is_ok());
+        source
+            .put(&Path::from("sessions/unexpected"), b"synthetic".to_vec().into())
+            .await
+            .unwrap();
+        assert_eq!(
+            inspect_source(&source).await.unwrap_err(),
+            "state inventory rejected unexpected object path"
+        );
     }
 }
