@@ -18,7 +18,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   r2_precheck:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && inputs.sole_writer_coordinated && inputs.budget_headroom_verified
     runs-on: ubuntu-latest
     environment: cloudflare-preview
     outputs:
@@ -49,6 +49,22 @@ jobs:
               out.write('empty=empty\n')
           print('Destination is empty')
           PY
+  inspection_outcome:
+    needs: [r2_precheck, inspect, r2_postcheck]
+    if: always()
+    runs-on: ubuntu-latest
+    env:
+      PRECHECK_RESULT: ${{ needs.r2_precheck.result }}
+      INSPECT_RESULT: ${{ needs.inspect.result }}
+      POSTCHECK_RESULT: ${{ needs.r2_postcheck.result }}
+    steps:
+      - name: Require completed inspection and destination checks
+        run: |
+          if [ "$PRECHECK_RESULT" != success ] || [ "$INSPECT_RESULT" != success ] || [ "$POSTCHECK_RESULT" != success ]; then
+            echo 'Inspection incomplete: precheck, inspection and postcheck must all succeed.'
+            exit 1
+          fi
+          echo 'Inspection and destination checks completed.'
   inspect:
     needs: r2_precheck
     if: github.ref == 'refs/heads/main' && inputs.sole_writer_coordinated && inputs.budget_headroom_verified && needs.r2_precheck.outputs.empty == 'empty'

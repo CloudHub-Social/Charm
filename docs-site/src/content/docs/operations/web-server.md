@@ -325,6 +325,9 @@ The handoff reports success only after capturing a conclusive inventory
 category and verifying that the retained app spec matches its original state.
 If the inspection flag, maintenance configuration or another setting remains
 changed after rollback, it stops for reconciliation without a second update.
+The dispatch requires both operator acknowledgments before any provider check,
+and its final outcome fails unless the precheck, inspection and destination
+postcheck all succeed; skipped or cancelled jobs are not successful inspection.
 
 For the ten-session planning scenario, doubling the estimated operations for that
 single retry remains below one million Class A and seven million Class B requests

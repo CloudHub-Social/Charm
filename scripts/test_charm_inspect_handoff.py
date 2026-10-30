@@ -1,8 +1,9 @@
-import ast, copy, sys, unittest
+import ast, copy, subprocess, sys, unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 import urllib.error
+import yaml
 path=str(Path(__file__).with_name('charm-inspect-handoff.py'))
 tree=ast.parse(open(path).read(), filename=path)
 selected=[n for n in tree.body if isinstance(n,(ast.Import,ast.ImportFrom,ast.FunctionDef)) or (isinstance(n,ast.Assign) and all(isinstance(t,ast.Name) for t in n.targets))]
@@ -109,5 +110,29 @@ class Fixtures(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 ns['read_candidate_until']('synthetic','synthetic',60)
         self.assertEqual(expired.call_count,1)
+
+    def test_workflow_requires_acknowledgments_and_all_three_job_outcomes(self):
+        workflow=Path(__file__).resolve().parents[1]/'.github/workflows/charm-inspect-dispatch.yml'
+        config=yaml.safe_load(workflow.read_text())
+        jobs=config['jobs']
+        for name in ['r2_precheck','inspect']:
+            condition=jobs[name]['if']
+            self.assertIn('inputs.sole_writer_coordinated',condition)
+            self.assertIn('inputs.budget_headroom_verified',condition)
+        outcome=jobs['inspection_outcome']
+        self.assertEqual(set(outcome['needs']),{'r2_precheck','inspect','r2_postcheck'})
+        self.assertEqual(outcome['if'],'always()')
+        env_names={'PRECHECK_RESULT':'r2_precheck','INSPECT_RESULT':'inspect','POSTCHECK_RESULT':'r2_postcheck'}
+        for variable,job in env_names.items():
+            self.assertEqual(outcome['env'][variable], '${{ needs.'+job+'.result }}')
+        command=outcome['steps'][0]['run']
+        good={key:'success' for key in env_names}
+        cases=[(good,0)]
+        for key in env_names:
+            for bad in ['skipped','failure','cancelled','']:
+                cases.append(({**good,key:bad},1))
+        for env,expected in cases:
+            result=subprocess.run(['/bin/bash','-c',command],env=env,capture_output=True)
+            self.assertEqual(result.returncode,expected,env)
 
 if __name__=='__main__': unittest.main()
