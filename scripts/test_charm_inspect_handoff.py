@@ -93,11 +93,17 @@ class Fixtures(unittest.TestCase):
         with patch.dict(ns,{'req':read,'time':fake_time}):
             self.assertEqual(ns['read_candidate_until']('synthetic','synthetic',60),{'phase':'BUILDING'})
         self.assertEqual(read.call_count,2)
-        denied=Mock(side_effect=urllib.error.HTTPError('https://example.invalid',403,'denied',None,None))
-        with patch.dict(ns,{'req':denied,'time':fake_time}):
-            with self.assertRaises(urllib.error.HTTPError):
-                ns['read_candidate_until']('synthetic','synthetic',60)
-        self.assertEqual(denied.call_count,1)
+        server_error=urllib.error.HTTPError('https://example.invalid',503,'unavailable',None,None)
+        read=Mock(side_effect=[server_error,{'deployment':{'phase':'BUILDING'}}])
+        with patch.dict(ns,{'req':read,'time':fake_time}):
+            self.assertEqual(ns['read_candidate_until']('synthetic','synthetic',60),{'phase':'BUILDING'})
+        self.assertEqual(read.call_count,2)
+        for status in [403,429]:
+            denied=Mock(side_effect=urllib.error.HTTPError('https://example.invalid',status,'denied',None,None))
+            with patch.dict(ns,{'req':denied,'time':fake_time}):
+                with self.assertRaises(urllib.error.HTTPError):
+                    ns['read_candidate_until']('synthetic','synthetic',60)
+            self.assertEqual(denied.call_count,1)
         expired=Mock(side_effect=urllib.error.URLError('synthetic'))
         with patch.dict(ns,{'req':expired,'time':SimpleNamespace(monotonic=lambda: 61,sleep=lambda _: None)}):
             with self.assertRaises(RuntimeError):
