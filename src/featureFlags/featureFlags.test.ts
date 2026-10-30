@@ -395,6 +395,43 @@ describe("feature-flag client", () => {
 });
 
 describe("supported UX bundles", () => {
+  it("preserves saved overrides when a bundle is requested during delayed initialization", async () => {
+    mocks.isTauri.mockReturnValue(true);
+    let releaseLoad: ((store: unknown) => void) | undefined;
+    mocks.load.mockReturnValue(
+      new Promise((resolve) => {
+        releaseLoad = resolve;
+      }),
+    );
+    const flags = await import("./index");
+    const initialization = flags.initializeFeatureFlags();
+    await expect(flags.setUxFeatureBundle("refreshed")).rejects.toThrow("not initialized");
+    const store = {
+      get: vi
+        .fn()
+        .mockResolvedValue({ state: { overrides: { voice_recording: true } }, version: 1 }),
+      set: vi.fn().mockResolvedValue(undefined),
+      save: vi.fn().mockResolvedValue(undefined),
+    };
+    await waitFor(() => expect(releaseLoad).toBeDefined());
+    releaseLoad?.(store);
+    await initialization;
+    expect(flags.getFeatureFlagOverrides()).toMatchObject({ voice_recording: true });
+    await flags.setUxFeatureBundle("refreshed");
+    expect(flags.getFeatureFlagOverrides()).toMatchObject({
+      voice_recording: true,
+      ux_refresh_v1: true,
+    });
+    expect(store.set).toHaveBeenCalledWith(
+      "featureFlags",
+      expect.objectContaining({
+        state: {
+          overrides: expect.objectContaining({ voice_recording: true, ux_refresh_v1: true }),
+        },
+      }),
+    );
+  });
+
   it.each(["legacy", "refreshed"] as const)(
     "persists %s together without enabling specialist features",
     async (bundle) => {
@@ -434,6 +471,9 @@ describe("supported UX bundles", () => {
     const flags = await import("./index");
     flags.featureFlagTestHooks.setCache({ ux_refresh_v1: false, voice_recording: true });
     await expect(flags.setUxFeatureBundle("refreshed")).rejects.toThrow();
-    expect(flags.getFeatureFlagOverrides()).toEqual({ ux_refresh_v1: false, voice_recording: true });
+    expect(flags.getFeatureFlagOverrides()).toEqual({
+      ux_refresh_v1: false,
+      voice_recording: true,
+    });
   });
 });

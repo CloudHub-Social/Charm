@@ -797,6 +797,5 @@ is weakened. The original implementation head is superseded by this repair.
 
 The CI-only validator is GPT-6 Luna High, resolved from the repository's
 registered `charm-validator` profile. The parent performed source implementation
-and self-review; no independent substantive review pass is claimed. Local
-engineering task receipt: `task_d774804b6b834ad6`. Current checks, deployment,
+and self-review; no independent substantive review pass is claimed. Current checks, deployment,
 snapshot approval and device acceptance remain separate evidence.

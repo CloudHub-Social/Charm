@@ -19,6 +19,7 @@ const A_FLAG = "canary";
 
 describe("LabsPanel", () => {
   it("applies and rolls back the supported UX bundle from Labs", async () => {
+    featureFlagTestHooks.setCache({});
     render(<LabsPanel />);
     fireEvent.click(screen.getByRole("button", { name: "Use refreshed UX" }));
     const shell = screen.getByRole("switch", { name: "Toggle Ux refresh v1" });
@@ -31,6 +32,12 @@ describe("LabsPanel", () => {
     fireEvent.click(rollback);
     await waitFor(() => expect(shell).not.toBeChecked());
     expect(screen.getByRole("switch", { name: "Toggle Composer parity" })).not.toBeChecked();
+  });
+
+  it("disables UX bundles until flags are initialized", () => {
+    render(<LabsPanel />);
+    expect(screen.getByRole("button", { name: "Use refreshed UX" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Use legacy UX" })).toBeDisabled();
   });
 
   it("reports rejected flag changes without exposing backend errors", async () => {

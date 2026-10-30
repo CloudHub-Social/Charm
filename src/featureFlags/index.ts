@@ -250,6 +250,7 @@ export function setFeatureFlagOverride(key: FeatureFlagKey, value: boolean): Pro
 
 /** Developer-only bundles. Appearance preferences and specialist flags are independent. */
 export function setUxFeatureBundle(bundle: "legacy" | "refreshed"): Promise<void> {
+  if (!initialized) return Promise.reject(new Error("Feature flags are not initialized"));
   const enabled = bundle === "refreshed";
   return setFeatureFlagOverridesInner({
     ux_refresh_v1: enabled,
