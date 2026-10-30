@@ -205,6 +205,15 @@ function ScopedReactionBar({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modalKey, modalReaction, tooltipKey, tooltipReaction]);
 
+  useEffect(() => {
+    if (!retainEmptyAnchor) return;
+    const anchor = groupRef.current;
+    if (!anchor) return;
+    const release = () => setRetainEmptyAnchor(false);
+    anchor.addEventListener("blur", release);
+    return () => anchor.removeEventListener("blur", release);
+  }, [retainEmptyAnchor]);
+
   if (
     reactions.length === 0 &&
     modalKey === null &&
@@ -318,9 +327,6 @@ function ScopedReactionBar({
         onTouchEnd={(event) => event.stopPropagation()}
         onTouchMove={(event) => event.stopPropagation()}
         onTouchCancel={(event) => event.stopPropagation()}
-        onBlur={(event) => {
-          if (!event.currentTarget.contains(event.relatedTarget)) setRetainEmptyAnchor(false);
-        }}
       >
         {chips}
         {reactions.length > 0 && (

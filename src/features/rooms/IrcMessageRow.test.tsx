@@ -5,10 +5,11 @@ import { describe, expect, it, vi } from "vitest";
 import { IrcMessageRow } from "./IrcMessageRow";
 import { makeMessageSummary } from "./testFixtures";
 import type { MessageRowLayoutProps } from "./messageRowShared";
+import type * as MatrixModule from "@/lib/matrix";
 
 vi.mock("@/featureFlags", () => ({ useFlag: () => true }));
 vi.mock("@/lib/matrix", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/matrix")>()),
+  ...(await importOriginal<typeof MatrixModule>()),
   getReactionDetails: vi.fn().mockResolvedValue([]),
 }));
 

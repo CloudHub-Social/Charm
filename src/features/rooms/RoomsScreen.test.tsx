@@ -11,7 +11,7 @@ import type { RoomSummary } from "@/lib/matrix";
 
 const mockUseAdaptiveLayout = vi.fn(() => "desktop");
 const mockAdaptiveWidth = vi.fn(() => "wide");
-const mockUseFlag = vi.fn((_key?: string) => true);
+const mockUseFlag = vi.fn<(key: string) => boolean>(() => true);
 const mockUseFeatureFlagPersistenceVersion = vi.fn(() => 0);
 const mockUseFeatureFlagPersistenceSettled = vi.fn(() => true);
 const mockIsWebBuild = vi.fn(() => false);
