@@ -5,6 +5,7 @@ import subprocess
 import sys
 
 APP = "d920ec97-4a06-40e1-b1b5-9cbc903f5ec6"
+INSTANCE_SIZE = "apps-s-1vcpu-0.5gb"
 
 
 def validate(app, instances, revision=None):
@@ -29,7 +30,9 @@ def validate(app, instances, revision=None):
         # app spec still owns the single service and its unchanged capacity.
         if candidate is active_spec and archived and not configured:
             continue
-        if len(configured) != 1 or configured[0].get("instance_count") != 1:
+        if (len(configured) != 1 or configured[0].get("name") != "api"
+                or configured[0].get("instance_count") != 1
+                or configured[0].get("instance_size_slug") != INSTANCE_SIZE):
             raise ValueError("cutover requires existing single-instance capacity")
     deployed = active.get("services") or []
     actual_revision_matches = (len(services) == 1 and len(deployed) == 1

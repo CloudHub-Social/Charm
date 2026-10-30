@@ -11,8 +11,9 @@ spec.loader.exec_module(module)
 
 class CutoverTest(unittest.TestCase):
     def valid(self):
-        return {"active_deployment": {"phase": "ACTIVE", "spec": {"maintenance": {"archive": True}, "services": [{"name": "api", "instance_count": 1}]}},
-                "spec": {"services": [{"instance_count": 1}]}}
+        service = {"name": "api", "instance_count": 1, "instance_size_slug": "apps-s-1vcpu-0.5gb"}
+        return {"active_deployment": {"phase": "ACTIVE", "spec": {"maintenance": {"archive": True}, "services": [service.copy()]}},
+                "spec": {"services": [service.copy()]}}
 
     def test_archived_without_instances(self):
         module.validate(self.valid(), [])
@@ -41,6 +42,16 @@ class CutoverTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             module.validate(app, [])
 
+    def test_wrong_or_missing_service_capacity_rejected(self):
+        for location in ["spec", "active"]:
+            for key, value in [("instance_size_slug", "apps-s-1vcpu-1gb"),
+                               ("instance_size_slug", None), ("name", "other")]:
+                app = self.valid()
+                target = app["spec"] if location == "spec" else app["active_deployment"]["spec"]
+                target["services"][0][key] = value
+                with self.assertRaises(ValueError):
+                    module.validate(app, [])
+
     def test_live_source_rejected(self):
         app = self.valid()
         app["active_deployment"]["spec"]["maintenance"]["archive"] = False
@@ -64,7 +75,7 @@ class CutoverTest(unittest.TestCase):
     def test_completed_same_revision_restart(self):
         app = self.valid()
         app["active_deployment"] = {"phase": "ACTIVE", "services": [{"name": "api", "source_commit_hash": "qualified"}], "spec": {"services": [{"name": "api",
-            "instance_count": 1, "envs": [
+            "instance_count": 1, "instance_size_slug": "apps-s-1vcpu-0.5gb", "envs": [
                 {"key": "CHARM_WEB_SERVER_STATE_BUCKET", "value": "charm-api-state-production"},
                 {"key": "CHARM_WEB_SERVER_EXPECTED_SOURCE_SHA", "value": "qualified"},
                 {"key": "CHARM_WEB_SERVER_STATE_CUTOVER_SHA", "value": "qualified"}]}]}}
