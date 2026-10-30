@@ -76,7 +76,7 @@ export function TimelineMessageRow({
     // item box, preserving bottom detection and prepend anchoring.
     <div
       className={cn(
-        "flex flex-col pb-1",
+        "flex min-w-0 max-w-full flex-col pb-1",
         uxRefreshEnabled && "mx-auto w-full max-w-[56rem]",
         highlightedEventId === message.event_id &&
           "rounded-md bg-primary/10 ring-2 ring-primary/60 transition-colors",

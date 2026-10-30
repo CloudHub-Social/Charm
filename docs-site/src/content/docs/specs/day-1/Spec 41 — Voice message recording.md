@@ -158,3 +158,53 @@ when interval callbacks were delayed or suspended.
 - Trim-before-send if users ask for it.
 - Playback-speed control on received voice messages (small `AudioPlayer`
   enhancement).
+
+## Unified composer accessory boundary
+
+`VoiceRecorder` offers an opt-in `presentation="composer"` for the single composer
+shell: idle is one labelled microphone button with a 44px minimum target, without
+an additional bordered recorder panel. Requesting, recording, preview, failed-send
+retry and discard reuse the existing capture and attachment controllers. The
+`disabled` input prevents a competing text/upload send from starting voice capture
+or voice send; stop/discard remain available. `onBusyChange` includes pending
+permission, capture, preview and voice send. `onCaptureChange` retains its narrower
+capture-only meaning. Preview audio fits the available width and pauses on send.
+
+The post-CI P1–P5 integration mounts exactly one accessory inside ChatShell's
+existing composer under default-off `voice_recording`. The editor remains mounted
+through capture/preview/retry. Touch/pen hold works at every width; mouse and
+keyboard retain accessible start/stop, independently of compact layout. A synchronous account/room send gate checks both
+Enter and imperative submission before parsing or clearing the private draft;
+text, slash commands, poll creation and attachment preflight cannot compete with
+voice. External send ownership disables voice start/send without disabling stop
+or discard, and voice never disables its own upload. Late file picker/preflight
+results cannot retarget a changed account/room. A blocked staged attachment is
+retained rather than cleared. Preview/retry retain the existing file, metadata,
+encryption, local echo and transaction route; no second send pipeline is added.
+Ordinary attachments release composer ownership after guarded preflight hands
+the transfer to the account/room-scoped upload controller. Their network transfer
+and cancellation continue in the background without blocking another draft;
+voice preview/send retains its separate ownership until success or discard.
+An ordinary transfer stays assigned to its original room when navigating elsewhere;
+its progress or failure is visible again on returning to that room. Account changes
+and unmount cancel account-bound transfers, while voice conversion/send custody
+also cancels on room change. Preflight results cannot start a transfer after their
+room/account owner changed, and late account results cannot populate a later session.
+On hybrid input devices, a genuine primary mouse press clears a canceled touch
+gesture's compatibility-click suppression, including while capture is active;
+the synthetic click after a touch hold still cannot restart or toggle recording.
+
+Integrated qualification remains pending current-head hosted regressions,
+accessibility, visual review and required snapshot approvals. See the
+[existing integration ledger](/operations/ux-recovery/) for source mappings and
+exact evidence stages. Native permission prompts, physical devices and codec /
+cross-client acceptance remain separate; source integration does not prove them.
+
+Dedicated unit definitions cover pending-send exclusion, retry identity, compact
+and wide idle access, pointer/keyboard controls and permission cancellation. The
+standalone Storybook fixture covers compact/wide sizing and keyboard focus with
+CI axe/screenshot capture. These synthetic fixtures do not prove actual composer
+integration, native microphone permission prompts, physical phone/iPad behavior,
+rotation/multitasking, screen-reader usability or cross-client interoperability.
+All execution and qualification run in GitHub Actions; device acceptance remains
+separate and outstanding.

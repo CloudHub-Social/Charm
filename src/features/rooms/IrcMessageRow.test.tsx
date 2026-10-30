@@ -1,12 +1,17 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render as rtlRender, screen } from "@testing-library/react";
+import { fireEvent, render as rtlRender, screen, waitFor } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { IrcMessageRow } from "./IrcMessageRow";
 import { makeMessageSummary } from "./testFixtures";
 import type { MessageRowLayoutProps } from "./messageRowShared";
+import type * as MatrixModule from "@/lib/matrix";
 
 vi.mock("@/featureFlags", () => ({ useFlag: () => true }));
+vi.mock("@/lib/matrix", async (importOriginal) => ({
+  ...(await importOriginal<typeof MatrixModule>()),
+  getReactionDetails: vi.fn().mockResolvedValue([]),
+}));
 
 // LinkPreviewForMessage (Spec 29) reads the room-details query cache via
 // `useQuery`, which needs a QueryClientProvider ancestor even when its own
@@ -65,6 +70,26 @@ function baseProps(overrides: Partial<MessageRowLayoutProps> = {}): MessageRowLa
 }
 
 describe("IrcMessageRow", () => {
+  it("keeps reactor dismissal and focus restoration alive when the last reaction vanishes", async () => {
+    const props = baseProps({
+      message: makeMessageSummary({
+        event_id: "$1",
+        sender: "@bob:localhost",
+        body: "hello",
+        reactions: [{ key: "👍", count: 1, reacted_by_me: false }],
+      }),
+    });
+    const view = render(<IrcMessageRow {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "View all 1 reactions for 👍" }));
+    await screen.findByRole("dialog");
+    view.rerender(<IrcMessageRow {...props} message={{ ...props.message, reactions: [] }} />);
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByRole("group", { name: "Reactions no longer available" })).toHaveFocus(),
+    );
+    expect(props.onReact).not.toHaveBeenCalled();
+  });
+
   it("renders [HH:MM] <nick> body on every line, ignoring sameSenderAsPrev/Next", () => {
     render(<IrcMessageRow {...baseProps({ sameSenderAsPrev: true, sameSenderAsNext: true })} />);
     expect(screen.getByText("<Bob>")).toBeInTheDocument();

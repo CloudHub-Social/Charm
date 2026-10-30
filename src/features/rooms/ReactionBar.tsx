@@ -1,14 +1,16 @@
 import { Plus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { cn } from "@/lib/utils";
 import { getReactionDetails, type ReactionGroup } from "@/lib/matrix";
 import type { ReactionDetail } from "@bindings/ReactionDetail";
 import { useFlag } from "@/featureFlags";
+import { cn } from "@/lib/utils";
 import { EmojiPicker } from "./EmojiPicker";
 import { WhoReactedDialog } from "./WhoReactedDialog";
+import { ReactionChip } from "./ReactionChip";
 
 interface ReactionBarProps {
+  className?: string;
   accountId?: string;
   reactions: ReactionGroup[];
   onToggle: (key: string) => void;
@@ -36,24 +38,51 @@ const TOOLTIP_NAME_LIMIT = 8;
  * so an always-visible empty-state "+" here would just duplicate it and
  * reserve dead space under every message.
  */
-export function ReactionBar({
+export function ReactionBar(props: ReactionBarProps) {
+  const messageActionParityEnabled = useFlag("message_action_parity");
+  // Remount before rendering another custody context: no old identities,
+  // pending requests, open viewers or touch timers can cross this boundary.
+  return (
+    <ScopedReactionBar
+      key={JSON.stringify([
+        props.accountId,
+        props.roomId,
+        props.eventId,
+        messageActionParityEnabled,
+      ])}
+      {...props}
+      messageActionParityEnabled={messageActionParityEnabled}
+    />
+  );
+}
+
+function ScopedReactionBar({
+  className,
   accountId = "anonymous",
   reactions,
   onToggle,
   disabled = false,
   roomId,
   eventId,
-}: ReactionBarProps) {
-  const messageActionParityEnabled = useFlag("message_action_parity");
-  const [detailsByKey, setDetailsByKey] = useState<Record<string, ReactionDetail[]>>({});
-  const [detailErrorsByKey, setDetailErrorsByKey] = useState<Record<string, boolean>>({});
+  messageActionParityEnabled,
+}: ReactionBarProps & { messageActionParityEnabled: boolean }) {
+  // Local echoes have transaction IDs, not server event IDs. A disabled
+  // mutation on a real event can still expose its read-only reactor list.
+  const canViewDetails = messageActionParityEnabled && !!roomId && !!eventId?.startsWith("$");
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+  const groupRef = useRef<HTMLFieldSetElement | null>(null);
+  const [detailsByKey, setDetailsByKey] = useState(() => new Map<string, ReactionDetail[]>());
+  const [detailErrorsByKey, setDetailErrorsByKey] = useState(() => new Map<string, boolean>());
   const [modalKey, setModalKeyState] = useState<string | null>(null);
+  // Keep the contextual target in layout until modal focus has returned.
+  const [detailsVisibleKey, setDetailsVisibleKey] = useState<string | null>(null);
+  const [retainEmptyAnchor, setRetainEmptyAnchor] = useState(false);
   const [tooltipKey, setTooltipKeyState] = useState<string | null>(null);
   // Keep the synchronous request lifecycle in refs and use a per-key
   // generation to prevent duplicate requests and discard responses invalidated
   // by tooltip close/refetch.
   const inFlightKeysRef = useRef(new Set<string>());
-  const requestGenerationRef = useRef<Record<string, number>>({});
+  const requestGenerationRef = useRef(new Map<string, number>());
   // Mirrors `modalKey` for synchronous reads inside `clearDetails` — React
   // batches the "View all" button's `setModalKey` with the state update
   // from the Tooltip's own `onOpenChange(false)` (both fire from the same
@@ -77,29 +106,29 @@ export function ReactionBar({
   // open, where a stale cached entry needs replacing rather than being
   // treated as fresh.
   function loadDetails(reaction: ReactionGroup, options?: { force?: boolean }) {
-    if (!messageActionParityEnabled || !roomId || !eventId) return;
+    if (!canViewDetails || !roomId || !eventId) return;
     const key = reaction.key;
-    if (!options?.force && (detailsByKey[key] || inFlightKeysRef.current.has(key))) return;
-    const generation = (requestGenerationRef.current[key] ?? 0) + 1;
-    requestGenerationRef.current[key] = generation;
+    if (!options?.force && (detailsByKey.has(key) || inFlightKeysRef.current.has(key))) return;
+    const generation = (requestGenerationRef.current.get(key) ?? 0) + 1;
+    requestGenerationRef.current.set(key, generation);
     inFlightKeysRef.current.add(key);
     setDetailErrorsByKey((prev) => {
-      if (!prev[key]) return prev;
-      const next = { ...prev };
-      delete next[key];
+      if (!prev.has(key)) return prev;
+      const next = new Map(prev);
+      next.delete(key);
       return next;
     });
     getReactionDetails(roomId, eventId, key)
       .then((details) => {
-        if (requestGenerationRef.current[key] !== generation) return;
-        setDetailsByKey((prev) => ({ ...prev, [key]: details }));
+        if (requestGenerationRef.current.get(key) !== generation) return;
+        setDetailsByKey((prev) => new Map(prev).set(key, details));
       })
       .catch(() => {
-        if (requestGenerationRef.current[key] !== generation) return;
-        setDetailErrorsByKey((prev) => ({ ...prev, [key]: true }));
+        if (requestGenerationRef.current.get(key) !== generation) return;
+        setDetailErrorsByKey((prev) => new Map(prev).set(key, true));
       })
       .finally(() => {
-        if (requestGenerationRef.current[key] !== generation) return;
+        if (requestGenerationRef.current.get(key) !== generation) return;
         inFlightKeysRef.current.delete(key);
       });
   }
@@ -108,18 +137,18 @@ export function ReactionBar({
     // from this same cache and closing the tooltip shouldn't blank it out.
     // Reads the ref (not the `modalKey` state) — see its declaration above.
     if (modalKeyRef.current === key) return;
-    requestGenerationRef.current[key] = (requestGenerationRef.current[key] ?? 0) + 1;
+    requestGenerationRef.current.set(key, (requestGenerationRef.current.get(key) ?? 0) + 1);
     inFlightKeysRef.current.delete(key);
     setDetailErrorsByKey((prev) => {
-      if (!(key in prev)) return prev;
-      const next = { ...prev };
-      delete next[key];
+      if (!prev.has(key)) return prev;
+      const next = new Map(prev);
+      next.delete(key);
       return next;
     });
     setDetailsByKey((prev) => {
-      if (!(key in prev)) return prev;
-      const next = { ...prev };
-      delete next[key];
+      if (!prev.has(key)) return prev;
+      const next = new Map(prev);
+      next.delete(key);
       return next;
     });
   }
@@ -178,42 +207,61 @@ export function ReactionBar({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modalKey, modalReaction, tooltipKey, tooltipReaction]);
 
-  if (reactions.length === 0) {
+  useEffect(() => {
+    if (!retainEmptyAnchor) return;
+    const anchor = groupRef.current;
+    if (!anchor) return;
+    if (document.activeElement !== anchor) {
+      setRetainEmptyAnchor(false);
+      return;
+    }
+    const release = () => setRetainEmptyAnchor(false);
+    anchor.addEventListener("blur", release);
+    return () => anchor.removeEventListener("blur", release);
+  }, [retainEmptyAnchor]);
+
+  if (
+    reactions.length === 0 &&
+    modalKey === null &&
+    detailsVisibleKey === null &&
+    !retainEmptyAnchor
+  ) {
     return null;
   }
 
   const chips = reactions.map((reaction) => {
+    function openDetails(trigger: HTMLButtonElement) {
+      returnFocusRef.current = trigger;
+      setDetailsVisibleKey(reaction.key);
+      setModalKey(reaction.key);
+      setTooltipKey(null);
+      loadDetails(reaction);
+    }
     const chip = (
-      <button
-        key={reaction.key}
-        type="button"
-        onClick={() => onToggle(reaction.key)}
-        // Radix opens the tooltip for either input path; load for both so
-        // keyboard and assistive-technology users receive the same details.
+      <ReactionChip
+        reaction={reaction}
+        disabled={disabled}
+        onToggle={() => onToggle(reaction.key)}
+        onViewDetails={canViewDetails ? openDetails : undefined}
         onMouseEnter={() => loadDetails(reaction)}
         onFocus={() => loadDetails(reaction)}
-        disabled={disabled}
-        aria-pressed={reaction.reacted_by_me}
-        className={cn(
-          "flex h-6 min-w-11 items-center justify-center gap-1 rounded-full border px-2 text-xs disabled:pointer-events-none disabled:opacity-40",
-          reaction.reacted_by_me
-            ? "border-primary bg-primary/10 text-primary"
-            : "border-border bg-secondary text-secondary-foreground",
-        )}
-      >
-        <span>{reaction.key}</span>
-        <span className="font-mono">{reaction.count}</span>
-      </button>
+      />
     );
 
-    if (!messageActionParityEnabled || !roomId || !eventId) return chip;
+    if (!canViewDetails) {
+      return (
+        <span key={reaction.key} className="min-w-0 max-w-full">
+          {chip}
+        </span>
+      );
+    }
 
-    const details = detailsByKey[reaction.key];
-    const detailError = detailErrorsByKey[reaction.key];
+    const details = detailsByKey.get(reaction.key);
+    const detailError = detailErrorsByKey.get(reaction.key);
     return (
       <span
         key={reaction.key}
-        className="flex items-center gap-1"
+        className="group/reaction flex min-w-0 max-w-full flex-wrap items-center gap-1"
         onMouseLeave={() => clearDetails(reaction.key)}
         onBlur={(event) => {
           const nextTarget = event.relatedTarget;
@@ -223,41 +271,48 @@ export function ReactionBar({
         }}
       >
         <Tooltip
+          open={tooltipKey === reaction.key && modalKey === null}
           onOpenChange={(open) => {
             if (open) {
-              setTooltipKey(reaction.key);
+              if (modalKeyRef.current === null) setTooltipKey(reaction.key);
               return;
             }
             if (tooltipKeyRef.current === reaction.key) setTooltipKey(null);
           }}
         >
           <TooltipTrigger asChild>{chip}</TooltipTrigger>
-          <TooltipContent>
-            {detailError ? (
-              "Could not load reactions."
-            ) : !details ? (
-              "Loading…"
-            ) : details.length === 0 ? (
-              "No reactions"
-            ) : (
-              <div className="flex flex-col gap-0.5">
-                {details.slice(0, TOOLTIP_NAME_LIMIT).map((detail) => (
-                  <span key={`${detail.sender}-${detail.origin_server_ts}`}>{detail.sender}</span>
-                ))}
-              </div>
-            )}
-          </TooltipContent>
+          {modalKey === null && (
+            <TooltipContent className="max-w-[calc(100vw-2rem)] break-all">
+              {detailError ? (
+                "Could not load reactions."
+              ) : !details ? (
+                "Loading…"
+              ) : details.length === 0 ? (
+                "No reactions"
+              ) : (
+                <div className="flex flex-col gap-0.5">
+                  {details.slice(0, TOOLTIP_NAME_LIMIT).map((detail) => (
+                    <span key={`${detail.sender}-${detail.origin_server_ts}`}>{detail.sender}</span>
+                  ))}
+                </div>
+              )}
+            </TooltipContent>
+          )}
         </Tooltip>
         <button
           type="button"
           aria-label={`View all ${reaction.count} reactions for ${reaction.key}`}
-          className="h-6 rounded-full border border-border px-2 text-xs text-muted-foreground hover:bg-secondary disabled:pointer-events-none disabled:opacity-40"
-          onClick={() => {
-            loadDetails(reaction);
-            setModalKey(reaction.key);
+          className={cn(
+            "sr-only group-focus-within/reaction:not-sr-only group-focus-within/reaction:flex group-focus-within/reaction:min-h-11 group-focus-within/reaction:min-w-11 group-focus-within/reaction:items-center group-focus-within/reaction:rounded-full group-focus-within/reaction:border group-focus-within/reaction:px-2 group-focus-within/reaction:text-xs",
+            detailsVisibleKey === reaction.key &&
+              "not-sr-only flex min-h-11 min-w-11 items-center rounded-full border px-2 text-xs",
+          )}
+          onClick={(event) => {
+            event.stopPropagation();
+            openDetails(event.currentTarget);
           }}
         >
-          {reaction.count > TOOLTIP_NAME_LIMIT ? `View all ${reaction.count}` : "View reactors"}
+          View reactors
         </button>
       </span>
     );
@@ -265,31 +320,60 @@ export function ReactionBar({
 
   return (
     <TooltipProvider>
-      <div className="mt-0.5 flex flex-wrap items-center gap-1">
+      <fieldset
+        ref={groupRef}
+        tabIndex={-1}
+        className={cn(
+          reactions.length === 0
+            ? "sr-only"
+            : "mt-0.5 flex min-w-0 max-w-full flex-wrap items-center gap-1",
+          className,
+        )}
+        aria-label={reactions.length === 0 ? "Reactions no longer available" : "Reactions"}
+        onTouchStart={(event) => event.stopPropagation()}
+        onTouchEnd={(event) => event.stopPropagation()}
+        onTouchMove={(event) => event.stopPropagation()}
+        onTouchCancel={(event) => event.stopPropagation()}
+      >
         {chips}
-        <EmojiPicker accountId={accountId} onSelect={onToggle}>
-          <button
-            type="button"
-            aria-label="Add reaction"
-            disabled={disabled}
-            className="flex size-6 items-center justify-center rounded-full border border-border text-muted-foreground hover:bg-secondary disabled:pointer-events-none disabled:opacity-40"
-          >
-            <Plus size={12} />
-          </button>
-        </EmojiPicker>
-      </div>
+        {reactions.length > 0 && (
+          <EmojiPicker accountId={accountId} onSelect={onToggle}>
+            <button
+              type="button"
+              aria-label="Add reaction"
+              disabled={disabled}
+              className="flex size-11 shrink-0 items-center justify-center rounded-full border border-border text-muted-foreground hover:bg-secondary disabled:pointer-events-none disabled:opacity-40"
+            >
+              <Plus size={12} />
+            </button>
+          </EmojiPicker>
+        )}
+      </fieldset>
       <WhoReactedDialog
         open={modalKey !== null}
         reactionKey={modalKey}
-        details={modalReaction ? (detailsByKey[modalReaction.key] ?? []) : []}
+        details={modalReaction ? (detailsByKey.get(modalReaction.key) ?? []) : []}
         loading={
           modalReaction !== undefined &&
-          detailsByKey[modalReaction.key] === undefined &&
-          !detailErrorsByKey[modalReaction.key]
+          !detailsByKey.has(modalReaction.key) &&
+          !detailErrorsByKey.get(modalReaction.key)
         }
-        error={modalReaction !== undefined && detailErrorsByKey[modalReaction.key]}
+        error={modalReaction !== undefined && detailErrorsByKey.get(modalReaction.key)}
         onRetry={() => modalReaction && loadDetails(modalReaction, { force: true })}
         onOpenChange={(open) => !open && closeModal()}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          const trigger = returnFocusRef.current;
+          if (trigger?.isConnected && !trigger.matches(":disabled")) trigger.focus();
+          else {
+            const fallback =
+              groupRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)");
+            if (!fallback) setRetainEmptyAnchor(true);
+            (fallback ?? groupRef.current)?.focus();
+          }
+          returnFocusRef.current = null;
+          setDetailsVisibleKey(null);
+        }}
       />
     </TooltipProvider>
   );

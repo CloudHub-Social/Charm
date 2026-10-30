@@ -23,64 +23,11 @@ jobs:
     outputs:
       web: ${{ steps.filter.outputs.web }}
     steps:
-      # Shallow checkout (default depth 1) — this job only needs a two-tree
-      # `git diff base..head`, same pattern as quality-checks.yml's `changes`
-      # job (see that file for the full rationale).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Check whether the web build's inputs changed
         id: filter
-        run: |
-          # Everything the shared web bundle can actually read: the app
-          # source, web entry points, license/notice files, the composite
-          # build action, root config, and the env files Vite loads for `--mode
-          # web` (the generic .env plus .env.web — VITE_CHARM_BUILD_TARGET in
-          # .env.web is consumed by src/lib/platform.ts; .env isn't tracked
-          # yet, but nothing gitignores a plain .env so it could be added),
-          # and the generated ts-rs bindings
-          # (build:web runs tsc first, and tsconfig maps @bindings/* to these —
-          # src/lib/matrix.ts imports them throughout, so a DTO shape change
-          # here can break the web build same as a src/ change). Deliberately
-          # excludes the REST of src-tauri/** (native-only) and
-          # crates/charm-web-server/** (a separately deployed companion server
-          # this preview only proxies to via an already-configured URL, not
-          # something this workflow builds) — unlike quality-checks.yml's
-          # broader frontend_pattern, this one is scoped to just what a
-          # Cloudflare Worker preview deploy needs.
-          web_pattern='^(src/|public/|\.design-sync/|src-tauri/src/bindings/|\.env$|\.env\.web$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig.*\.json$|vite\.config\.ts$|index\.html$|LICENSE$|NOTICE$|LICENSING\.md$|THIRD_PARTY_NOTICES\.md$|scripts/(generate-third-party-licenses\.mjs$|license-texts/)|\.github/actions/build-web-worker/|\.github/workflows/web-preview\.yml$)'
-
-          diff_from() {
-            # --no-renames: default rename detection can report ONLY the
-            # destination path for a moved file (e.g. src/Foo.tsx ->
-            # docs/Foo.tsx shows up as just "docs/Foo.tsx"), silently hiding
-            # that a web source file left the tree entirely. Verified
-            # empirically — plain `git diff --name-only` omits the source
-            # side of a rename; --no-renames reports both.
-            git fetch --no-tags --depth=1 --quiet origin "$1" \
-              && git diff --no-renames --name-only "$1" "${{ github.sha }}"
-          }
-          # On a fetch/diff failure, deploy anyway (safe default — this can
-          # only over-run, never wrongly skip a real web change).
-          fallback() { echo "::notice::changes: could not diff against base $1; deploying anyway"; changed="src/"; }
-
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            base="${{ github.event.pull_request.base.sha }}"
-            changed=$(diff_from "$base") || fallback "$base"
-          else
-            # workflow_dispatch — the only other event this workflow listens
-            # to (see the `on:` block; there's no push trigger here). No
-            # "changed files" concept for a manual run, and no
-            # github.event.before to diff against, so always deploy rather
-            # than attempting a pointless `git fetch origin ""`.
-            changed="src/"
-          fi
-
-          if echo "$changed" | grep -qE "$web_pattern"; then
-            web=true
-          else
-            web=false
-          fi
-          echo "web=$web" >> "$GITHUB_OUTPUT"
+        run: node scripts/ci/selection.mjs web
 
   mark-stale-preview:
     name: Mark existing preview comment stale

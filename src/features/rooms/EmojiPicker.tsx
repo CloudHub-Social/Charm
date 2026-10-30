@@ -209,7 +209,8 @@ export function EmojiPicker({
 
   function select(emoji: string) {
     onSelect(emoji);
-    if (fullPickerEnabled) setOpen(false);
+    // Both modes finish one selection and restore focus through Radix.
+    setOpen(false);
   }
 
   return (

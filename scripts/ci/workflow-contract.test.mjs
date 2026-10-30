@@ -46,3 +46,18 @@ test("consumers use successful producer attempts, including after partial reruns
     2,
   );
 });
+
+test("Quality, iOS and preview share validated merge input resolution", () => {
+  assert.match(quality, /run: node scripts\/ci\/selection\.mjs\n/);
+  for (const [file, lane] of [
+    ["ios-release-evidence", "ios"],
+    ["web-preview", "web"],
+  ]) {
+    const workflow = readFileSync(
+      new URL(`../../.github/workflows/${file}.yml`, import.meta.url),
+      "utf8",
+    );
+    assert.ok(workflow.includes(`run: node scripts/ci/selection.mjs ${lane}`));
+    assert.doesNotMatch(workflow, /PR_BASE_SHA|diff_from\(/);
+  }
+});

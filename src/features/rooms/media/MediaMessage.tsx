@@ -72,7 +72,7 @@ export function MediaMessage({ content, roomId, eventId, body }: MediaMessagePro
   }
 
   return (
-    <div className="flex flex-col gap-1">
+    <div className="flex min-w-0 max-w-full flex-col gap-1">
       <FileChip
         filename={content.filename}
         mime={content.mime}

@@ -66,3 +66,213 @@ for (const enabled of [false, true]) {
     await expect(page.getByText("No messages yet", { exact: true })).toBeVisible();
   });
 }
+
+test("one integrated composer retains its draft through voice preview, retry and adaptive resize", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "charm:featureFlags",
+      JSON.stringify({
+        state: { overrides: { voice_recording: true, ux_refresh_v1: true, composer_parity: true } },
+        updatedAt: Date.now(),
+      }),
+    );
+  });
+  await page.addInitScript(installMockTauri, {
+    userId: "@voice:localhost",
+    deviceId: "VOICE_DEVICE",
+    room: ROOM,
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: ROOM.name }).click();
+  await page.evaluate(() => {
+    const original = window.__TAURI_INTERNALS__.invoke;
+    const evidence = {
+      voice: [] as Array<{ room: unknown; metadata: unknown; bytes: unknown }>,
+      text: 0,
+    };
+    (window as unknown as { __integratedVoice: typeof evidence }).__integratedVoice = evidence;
+    window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+      if (command === "send_message") evidence.text += 1;
+      if (command === "send_attachment" && args?.voice) {
+        evidence.voice.push({ room: args.roomId, metadata: args.voice, bytes: args.recording });
+        if (evidence.voice.length === 1) throw new Error("Synthetic voice retry");
+      }
+      return original(command, args);
+    };
+  });
+  const shell = page.getByTestId("composer-shell");
+  const editor = shell.getByRole("textbox");
+  await expect(editor).toHaveCount(1);
+  await editor.fill("Private text remains while voice owns send");
+  await editor.evaluate((element) => element.setAttribute("data-composer-owner", "retained"));
+  const start = shell.getByRole("button", { name: "Record voice message", exact: true });
+  await expect(shell.locator('section[aria-label="Voice message"]')).toHaveCount(1);
+  await start.click();
+  await expect(page.getByLabel("Recording duration")).not.toHaveText("0:00");
+  await editor.press("Enter");
+  await expect(editor).toContainText("Private text remains while voice owns send");
+  await expect(shell.getByRole("button", { name: "Attach", exact: true })).toBeDisabled();
+  await shell.getByRole("button", { name: "Stop recording", exact: true }).click();
+  const preview = shell.getByLabel("Voice message preview");
+  await expect(preview).toHaveAttribute("src", /^blob:/);
+  await preview.evaluate((element) => element.setAttribute("data-voice-owner", "retained"));
+  for (const width of [1199, 834, 768, 767, 390, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    await expect(editor).toHaveAttribute("data-composer-owner", "retained");
+    await expect(preview).toHaveAttribute("data-voice-owner", "retained");
+    await expect(editor).toContainText("Private text remains while voice owns send");
+    await expect(page.locator("body")).toHaveJSProperty("scrollWidth", width);
+    const bounds = await preview.boundingBox();
+    expect(bounds).not.toBeNull();
+    expect(bounds!.x).toBeGreaterThanOrEqual(0);
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
+  }
+  await shell.getByRole("button", { name: "Send voice message", exact: true }).click();
+  await expect(
+    shell.getByRole("button", { name: "Retry voice message", exact: true }),
+  ).toBeVisible();
+  await expect(editor).toContainText("Private text remains while voice owns send");
+  await captureSnapshot(page, "integrated-composer-voice-retry-draft");
+  await shell.getByRole("button", { name: "Retry voice message", exact: true }).click();
+  await expect(preview).toHaveCount(0);
+  await expect(start).toBeVisible();
+  const evidence = await page.evaluate(
+    () =>
+      (
+        window as unknown as {
+          __integratedVoice: {
+            voice: Array<{ room: unknown; metadata: unknown; bytes: unknown }>;
+            text: number;
+          };
+        }
+      ).__integratedVoice,
+  );
+  expect(evidence.voice).toHaveLength(2);
+  expect(evidence.voice[0]).toEqual(evidence.voice[1]);
+  expect(evidence.voice[0].room).toBe(ROOM.room_id);
+  expect(evidence.text).toBe(0);
+  await editor.press("Enter");
+  await expect(editor).toHaveText("");
+  await expect(
+    page.getByText("Private text remains while voice owns send", { exact: true }),
+  ).toBeVisible();
+  await start.click();
+  await expect(page.getByLabel("Recording duration")).not.toHaveText("0:00");
+  await shell.getByRole("button", { name: "Stop recording", exact: true }).click();
+  await shell.getByRole("button", { name: "Discard recording", exact: true }).click();
+  await expect(start).toBeFocused();
+  await captureSnapshot(page, "integrated-composer-voice-discard");
+});
+
+test("staged drops and pastes wait behind voice without locking its send or losing the draft", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "charm:featureFlags",
+      JSON.stringify({
+        state: {
+          overrides: { voice_recording: true, media_send_polish: true, ux_refresh_v1: true },
+        },
+        updatedAt: Date.now(),
+      }),
+    );
+  });
+  await page.addInitScript(installMockTauri, {
+    userId: "@voice:localhost",
+    deviceId: "VOICE_DEVICE",
+    room: ROOM,
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: ROOM.name }).click();
+  await page.evaluate(() => {
+    const original = window.__TAURI_INTERNALS__.invoke;
+    const sends: Array<{ room: unknown; voice: boolean; file: unknown }> = [];
+    (window as unknown as { __stagedVoiceSends: typeof sends }).__stagedVoiceSends = sends;
+    window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+      if (command === "send_attachment")
+        sends.push({ room: args?.roomId, voice: !!args?.voice, file: args?.filePath });
+      return original(command, args);
+    };
+  });
+  const shell = page.getByTestId("composer-shell");
+  // ProseMirror may briefly create an unlabelled editable paste buffer.
+  const editor = shell.getByRole("textbox");
+  await expect(editor).toHaveCount(1);
+  await editor.fill("Keep the text draft and both media owners");
+  await shell.getByRole("button", { name: "Record voice message", exact: true }).click();
+  await expect(page.getByLabel("Recording duration")).not.toHaveText("0:00");
+  const transfer = await page.evaluateHandle(() => {
+    const data = new DataTransfer();
+    data.items.add(new File(["synthetic"], "pending.png", { type: "image/png" }));
+    // Synthetic Tauri path extension; no host file or real upload is used.
+    Object.defineProperty(data.files[0], "path", { value: "/synthetic/pending.png" });
+    return data;
+  });
+  await page.getByTestId("chat-shell").dispatchEvent("drop", { dataTransfer: transfer });
+  const attachment = page.getByRole("button", { name: "Send attachment", exact: true });
+  await expect(attachment).toBeDisabled();
+  await expect(shell.getByRole("button", { name: "Stop recording", exact: true })).toBeEnabled();
+  await shell.getByRole("button", { name: "Stop recording", exact: true }).click();
+  await expect(shell.getByLabel("Voice message preview")).toHaveAttribute("src", /^blob:/);
+  const sendVoice = shell.getByRole("button", { name: "Send voice message", exact: true });
+  await expect(sendVoice).toBeEnabled();
+  await page.getByRole("button", { name: "Cancel attachment", exact: true }).click();
+  const clipboard = await editor.evaluate((element) => {
+    const data = new DataTransfer();
+    data.items.add(new File(["synthetic"], "pending.png", { type: "image/png" }));
+    Object.defineProperty(data.files[0], "path", { value: "/synthetic/pending.png" });
+    const event = new ClipboardEvent("paste", {
+      clipboardData: data,
+      bubbles: true,
+      cancelable: true,
+    });
+    let bubbled = false;
+    element.parentElement?.addEventListener(
+      "paste",
+      () => {
+        bubbled = true;
+      },
+      { once: true },
+    );
+    element.dispatchEvent(event);
+    return {
+      files: event.clipboardData?.files.length,
+      type: event.clipboardData?.files[0]?.type,
+      prevented: event.defaultPrevented,
+      bubbled,
+    };
+  });
+  expect(clipboard.files).toBe(1);
+  expect(clipboard.type).toBe("image/png");
+  await expect(editor).toHaveCount(1);
+  await expect(attachment, JSON.stringify(clipboard)).toBeDisabled();
+  await expect(sendVoice).toBeEnabled();
+  await editor.press("Enter");
+  await expect(editor).toContainText("Keep the text draft and both media owners");
+  await captureSnapshot(page, "integrated-composer-staged-file-voice-preview");
+  await sendVoice.click();
+  await expect(shell.getByLabel("Voice message preview")).toHaveCount(0);
+  await expect(attachment).toBeEnabled();
+  await attachment.click();
+  await expect(attachment).toHaveCount(0);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (
+            window as unknown as {
+              __stagedVoiceSends: Array<{ room: unknown; voice: boolean; file: unknown }>;
+            }
+          ).__stagedVoiceSends,
+      ),
+    )
+    .toEqual([
+      { room: ROOM.room_id, voice: true, file: "" },
+      { room: ROOM.room_id, voice: false, file: "/synthetic/pending.png" },
+    ]);
+  await expect(editor).toContainText("Keep the text draft and both media owners");
+});

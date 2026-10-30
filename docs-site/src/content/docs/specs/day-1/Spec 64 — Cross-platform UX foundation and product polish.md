@@ -266,3 +266,53 @@ spec rather than introduce another parallel navigation or composer.
    media playback, calls, and account isolation survive pane and breakpoint changes.
 8. The legacy shell remains functional with `ux_refresh_v1` disabled throughout
    the rollback window.
+
+## Conversation repair follow-up (2026-10-27)
+
+PR #601 corrects the composition of existing message layouts. Message actions
+are bounded overlays and consume no prose width. Pointer hover and keyboard
+focus reveal the toolbar; a normal text tap reveals it on touch by focusing the
+native menu button. Existing long-press and pointer context-menu entry reuse the
+same permission-aware menu. Keyboard users reach native action buttons with Tab
+and activate the menu with Enter, Space, or ArrowDown; Escape returns focus to
+its trigger. The message container is not itself a button or a tab stop. Embedded
+controls, links, selected text, scrolling, and cancelled gestures retain their
+own interactions. Touch does not permanently show the quick-reaction row.
+The right-button release that opens a context menu cannot select one of its
+items; selecting an action requires a separate primary click or keyboard action.
+
+The toolbar remains visible and hit-testable while its nested picker or menu
+is open, including when a portal owns focus outside the message DOM subtree.
+Both emoji-picker variants dismiss after a selection. More actions can replace
+an already-open picker without an extra dismiss step or a forced interaction.
+
+Toolbar placement uses the visible timeline and visual viewport as collision
+boundaries. Prefer above the target message, then below a short message when
+there is no room above. For a partially scrolled tall message, keep contextual
+controls in its visible slice. Scrolling and resizing update the active
+surface; inactive virtualized rows do not each subscribe to scroll events.
+The existing Radix menu, focus restoration, and gesture safeguards remain
+the owners of interaction, rather than introducing a second action system.
+
+Native disclosure controls and events originating in portalled content keep
+their own interaction and focus behavior. Message-tap handlers apply only to
+prose inside the actual DOM row. Loading/caught-up headers use the same
+legacy or refreshed gutters as message items; top padding is owned by the
+header when present, otherwise by the first item, never both.
+
+Timeline gutters are measured item content. Bubbles retain their saved visual
+mode, and IRC reactions use the next line instead of crowding sender and text.
+These repairs do not promote the refresh flag or complete composer/tablet work.
+See the [implementation ledger](/operations/ux-recovery/).
+
+
+## Coupled P1–P5 integration follow-up
+
+Post-CI main PR610 is the base for one integrated containment/actions, quiet
+reaction-target, voice/text composer and adaptive-layout change. Shared send
+ownership guards drafts before clearing; medium context/native focus, pinned
+jumps and compact Spaces/Back are reconciled with existing navigation. Default-off
+flags, account/room permissions and saved preferences remain unchanged. The
+[existing UX recovery ledger](/operations/ux-recovery/) owns source mappings,
+hosted regression/security/axe/visual evidence and remaining snapshot/device gaps.
+This source integration is not full P0–P12 completion; P6–P11 remain backlog.

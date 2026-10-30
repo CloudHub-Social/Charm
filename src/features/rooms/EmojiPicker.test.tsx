@@ -45,7 +45,7 @@ describe("EmojiPicker", () => {
     localStorage.clear();
   });
 
-  it("retains the compact picker while the full picker flag is disabled", async () => {
+  it("closes the compact picker after selection while the full picker flag is disabled", async () => {
     const onSelect = vi.fn();
     render(
       <EmojiPicker accountId="@alice:example.org" onSelect={onSelect}>
@@ -56,8 +56,10 @@ describe("EmojiPicker", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open emoji picker" }));
     fireEvent.click(await screen.findByRole("button", { name: "React with 👍" }));
 
-    expect(onSelect).toHaveBeenCalledWith("👍");
-    expect(screen.getByRole("button", { name: "React with 👍" })).toBeInTheDocument();
+    expect(onSelect).toHaveBeenCalledExactlyOnceWith("👍");
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "React with 👍" })).not.toBeInTheDocument(),
+    );
   });
 
   it("configures the lazy full picker and forwards custom emoji categories", async () => {
