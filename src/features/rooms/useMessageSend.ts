@@ -57,15 +57,23 @@ export function useMessageSend({
   // misattributed to whatever room is showing now.
   const currentRoomIdRef = useRef(roomId);
   const nicknameInFlight = useRef(false);
-  const roomNicknameInFlight = useRef(false);
-  const directMessageInFlight = useRef(false);
   const navigationAbortRef = useRef<AbortController | null>(null);
-  const commandScopeRef = useRef({ roomId, currentUserId });
+  const commandScopeRef = useRef({
+    roomId,
+    currentUserId,
+    roomNicknameInFlight: false,
+    directMessageInFlight: false,
+  });
   if (
     commandScopeRef.current.roomId !== roomId ||
     commandScopeRef.current.currentUserId !== currentUserId
   ) {
-    commandScopeRef.current = { roomId, currentUserId };
+    commandScopeRef.current = {
+      roomId,
+      currentUserId,
+      roomNicknameInFlight: false,
+      directMessageInFlight: false,
+    };
   }
   const parityEnabledRef = useRef(composerParityEnabled);
   parityEnabledRef.current = composerParityEnabled;
@@ -199,13 +207,13 @@ export function useMessageSend({
         try {
           switch (command) {
             case "myroomnick":
-              if (roomNicknameInFlight.current) {
+              if (targetScope.roomNicknameInFlight) {
                 setCommandFeedback(
                   "A room nickname update is already in progress. Try again after it finishes.",
                 );
                 return false;
               }
-              roomNicknameInFlight.current = true;
+              targetScope.roomNicknameInFlight = true;
               try {
                 if (!currentUserId) throw new Error("No signed-in user");
                 const profile = await getUserProfile(currentUserId, targetRoomId, false);
@@ -218,17 +226,17 @@ export function useMessageSend({
                   queryKey: ["user-profile", currentUserId, currentUserId, targetRoomId],
                 });
               } finally {
-                roomNicknameInFlight.current = false;
+                targetScope.roomNicknameInFlight = false;
               }
               break;
             case "startdm":
-              if (directMessageInFlight.current) {
+              if (targetScope.directMessageInFlight) {
                 setCommandFeedback(
                   "A direct message is already opening. Try again after it finishes.",
                 );
                 return false;
               }
-              directMessageInFlight.current = true;
+              targetScope.directMessageInFlight = true;
               try {
                 if (!onNavigateToRoom) throw new Error("Room navigation unavailable");
                 const directRoomId = await startDirectMessage(args[0]);
@@ -237,7 +245,7 @@ export function useMessageSend({
                 navigationAbortRef.current = controller;
                 await onNavigateToRoom(directRoomId, controller.signal);
               } finally {
-                directMessageInFlight.current = false;
+                targetScope.directMessageInFlight = false;
               }
               break;
             case "join":

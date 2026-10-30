@@ -190,6 +190,9 @@ its progress or failure is visible again on returning to that room. Account chan
 and unmount cancel account-bound transfers, while voice conversion/send custody
 also cancels on room change. Preflight results cannot start a transfer after their
 room/account owner changed, and late account results cannot populate a later session.
+On hybrid input devices, a genuine primary mouse press clears a canceled touch
+gesture's compatibility-click suppression, including while capture is active;
+the synthetic click after a touch hold still cannot restart or toggle recording.
 
 Integrated qualification remains pending current-head hosted regressions,
 accessibility, visual review and required snapshot approvals. See the

@@ -216,6 +216,17 @@ to the current room. Deferred transport regressions cover original-room errors,
 account cancellation and voice cancellation; current-head hosted qualification is
 still required. This does not change encryption, transport endpoints or flags.
 
+At `5d83e42a`, Quality41017622675 passed frontend (2,354 tests), browser,
+Storybook/axe and visual consumers. Coverage was statements86.86/branches84.96/
+functions80.74/lines89.08, above the unchanged ratchets. Fresh review then identified
+command locks outliving their account/room and canceled touch suppression swallowing
+a later mouse Stop. Room-nickname/DM locks now belong to the existing command-scope
+token, so a stale completion cannot block or unlock another scope. Primary mouse
+pointer-down clears stale compatibility-click suppression before the capture guard.
+Regressions retain same-scope duplicate exclusion and stale action rejection while
+covering new scopes and touch-cancel → keyboard restart → mouse Stop. Fresh hosted
+qualification is required; the prior pass is not inherited by this follow-up.
+
 Implementation is in progress, not yet qualified. Exact-head hosted frontend,
 browser, security, axe, current screenshots and substantive review dispositions
 must pass. Existing gallery candidates and snapshot approvals are historical;

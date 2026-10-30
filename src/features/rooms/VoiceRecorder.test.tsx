@@ -255,6 +255,35 @@ describe("VoiceRecorder", () => {
     expect(capture.stop).toHaveBeenCalledOnce();
   });
 
+  it.each(["pointercancel", "lostpointercapture"])(
+    "accepts a mouse stop after %s followed by a keyboard restart",
+    (event) => {
+      capture.phase = "idle";
+      capture.preview = null;
+      const props = { mobile: true, onSend: vi.fn(), onClearFailedUpload: vi.fn() };
+      const view = render(<VoiceRecorder {...props} />);
+      const button = screen.getByRole("button", { name: "Record voice message" });
+      Object.defineProperty(button, "setPointerCapture", { value: vi.fn() });
+      pointerEvent(button, "pointerdown");
+      capture.phase = "requesting";
+      view.rerender(<VoiceRecorder {...props} />);
+      pointerEvent(button, event);
+      expect(capture.stop).toHaveBeenCalledOnce();
+      capture.phase = "idle";
+      view.rerender(<VoiceRecorder {...props} />);
+      fireEvent.click(button, { detail: 0 });
+      expect(capture.start).toHaveBeenCalledTimes(2);
+      capture.phase = "recording";
+      view.rerender(<VoiceRecorder {...props} />);
+      capture.stop.mockClear();
+      pointerEvent(button, "pointerdown", { pointerType: "mouse" });
+      fireEvent.click(button, { detail: 1 });
+      expect(capture.stop).toHaveBeenCalledOnce();
+      expect(capture.start).toHaveBeenCalledTimes(2);
+      expect(capture.discard).not.toHaveBeenCalled();
+    },
+  );
+
   it("supports keyboard start on mobile", () => {
     const button = renderMobileRecorder();
     fireEvent.click(button, { detail: 0 });

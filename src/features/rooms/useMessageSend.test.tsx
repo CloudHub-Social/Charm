@@ -729,6 +729,72 @@ describe("room nickname and direct-message commands", () => {
     },
   );
 
+  it.each(["myroomnick", "startdm"] as const)(
+    "keeps /%s locks local to a room/account attempt even when an older request finishes",
+    async (command) => {
+      for (const change of ["room", "account", "away-and-back"] as const) {
+        let finishOld!: (value: never) => void;
+        let finishNew!: (value: never) => void;
+        const operation =
+          command === "myroomnick" ? mocks.getUserProfile : mocks.startDirectMessage;
+        const previousCalls = operation.mock.calls.length;
+        operation
+          .mockImplementationOnce(
+            () =>
+              new Promise((resolve) => {
+                finishOld = resolve;
+              }),
+          )
+          .mockImplementationOnce(
+            () =>
+              new Promise((resolve) => {
+                finishNew = resolve;
+              }),
+          );
+        const { result, rerender, unmount } = setup();
+        const parsed = parseSlashCommand(`/${command} @alice:example.org`, true)!;
+        let old!: Promise<boolean>;
+        let current!: Promise<boolean>;
+        act(() => {
+          old = result.current.handleSlashCommand(parsed);
+        });
+        if (change === "account")
+          rerender({ activeRoom: room, currentUserId: "@other:example.org" });
+        else {
+          rerender({
+            activeRoom: { ...room, room_id: "!next:example.org" },
+            currentUserId: userId,
+          });
+          if (change === "away-and-back") rerender({ activeRoom: room, currentUserId: userId });
+        }
+        act(() => {
+          current = result.current.handleSlashCommand(parsed);
+        });
+        expect(operation).toHaveBeenCalledTimes(previousCalls + 2);
+        const value = (
+          command === "myroomnick" ? { room_avatar_url: null } : "!dm:example.org"
+        ) as never;
+        await act(async () => {
+          finishOld(value);
+          expect(await old).toBe(false);
+        });
+        await act(async () => {
+          expect(await result.current.handleSlashCommand(parsed)).toBe(false);
+        });
+        expect(operation).toHaveBeenCalledTimes(previousCalls + 2);
+        await act(async () => {
+          finishNew(value);
+          expect(await current).toBe(true);
+        });
+        await act(async () => {
+          await result.current.handleSlashCommand(parsed);
+        });
+        expect(operation).toHaveBeenCalledTimes(previousCalls + 3);
+        unmount();
+      }
+    },
+  );
+
   it.each(["room", "account", "away-and-back", "lock", "flag", "unmount"] as const)(
     "does not navigate after a DM result becomes stale (%s)",
     async (change) => {

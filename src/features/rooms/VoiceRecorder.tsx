@@ -160,6 +160,8 @@ export function VoiceRecorder({
               else if (!disabled && onStart?.() !== false) void startRecording();
             }}
             onPointerDown={(event) => {
+              if (event.pointerType === "mouse" && event.button === 0 && event.isPrimary)
+                suppressPointerClick.current = false;
               if (disabled || capturing) return;
               if (event.button !== 0 || !event.isPrimary || pointer.current) return;
               suppressPointerClick.current = false;
