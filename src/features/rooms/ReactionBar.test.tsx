@@ -701,7 +701,7 @@ describe("ReactionBar", () => {
     details.focus();
     fireEvent.click(details);
     await screen.findByRole("dialog");
-    fireEvent.click(screen.getByRole("button", { name: "Close", exact: true }));
+    fireEvent.click(screen.getByRole("button", { name: /^Close$/ }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     await waitFor(() => expect(details).toHaveFocus());
     view.rerender(<ReactionBar {...props} reactions={[]} />);

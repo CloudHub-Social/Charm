@@ -74,6 +74,8 @@ describe("IrcMessageRow", () => {
     const props = baseProps({
       message: makeMessageSummary({
         event_id: "$1",
+        sender: "@bob:localhost",
+        body: "hello",
         reactions: [{ key: "👍", count: 1, reacted_by_me: false }],
       }),
     });
