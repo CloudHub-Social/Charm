@@ -165,16 +165,15 @@ export function IrcMessageRow({
         )}
       </div>
       {!message.redacted && (
-        <div className="min-w-0 basis-full">
-          <ReactionBar
-            accountId={currentUserId ?? ""}
-            reactions={message.reactions}
-            onToggle={onReact}
-            disabled={disableRelationActions || isUndecrypted}
-            roomId={roomId}
-            eventId={message.event_id}
-          />
-        </div>
+        <ReactionBar
+          className="basis-full"
+          accountId={currentUserId ?? ""}
+          reactions={message.reactions}
+          onToggle={onReact}
+          disabled={disableRelationActions || isUndecrypted}
+          roomId={roomId}
+          eventId={message.event_id}
+        />
       )}
       {(!message.redacted || (!own && onReport)) && (
         <MessageActions

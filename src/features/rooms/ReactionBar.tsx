@@ -10,6 +10,7 @@ import { WhoReactedDialog } from "./WhoReactedDialog";
 import { ReactionChip } from "./ReactionChip";
 
 interface ReactionBarProps {
+  className?: string;
   accountId?: string;
   reactions: ReactionGroup[];
   onToggle: (key: string) => void;
@@ -56,6 +57,7 @@ export function ReactionBar(props: ReactionBarProps) {
 }
 
 function ScopedReactionBar({
+  className,
   accountId = "anonymous",
   reactions,
   onToggle,
@@ -317,11 +319,12 @@ function ScopedReactionBar({
       <fieldset
         ref={groupRef}
         tabIndex={-1}
-        className={
+        className={cn(
           reactions.length === 0
             ? "sr-only"
-            : "mt-0.5 flex min-w-0 max-w-full flex-wrap items-center gap-1"
-        }
+            : "mt-0.5 flex min-w-0 max-w-full flex-wrap items-center gap-1",
+          className,
+        )}
         aria-label={reactions.length === 0 ? "Reactions no longer available" : "Reactions"}
         onTouchStart={(event) => event.stopPropagation()}
         onTouchEnd={(event) => event.stopPropagation()}
