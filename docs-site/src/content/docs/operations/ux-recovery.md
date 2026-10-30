@@ -780,3 +780,23 @@ Independent preview HTTP503 (#606), snapshot approval and physical-device debt f
 P1–P5 are retained dependencies, not inherited passing evidence. Codex review stays
 owner-waived, not passed. This increment is implementation, not P6/P7 programme
 acceptance, deployment or release.
+
+
+### PR612 first hosted checkpoint
+
+Implementation commit `80a908f77628b872b19b795b71ce558ef4fae5bf` is pushed in
+[PR612](https://github.com/CloudHub-Social/Charm/pull/612), targeting main.
+[Quality 41077308886](https://github.com/CloudHub-Social/Charm/actions/runs/41077308886)
+frontend failed TypeScript TS6133: Modern retained an unused `own` binding after
+action extraction. [Preview 41077308591](https://github.com/CloudHub-Social/Charm/actions/runs/41077308591)
+failed on the same compiler error; deployment and API-proxy verification were
+skipped, so this is not a fresh HTTP503 or live-behavior receipt. PR checklist
+also required a release changeset. This follow-up removes the unused binding
+and adds the changeset; fresh repair-head CI is pending. No assertion or gate
+is weakened. The original implementation head is superseded by this repair.
+
+The CI-only validator is GPT-6 Luna High, resolved from the repository's
+registered `charm-validator` profile. The parent performed source implementation
+and self-review; no independent substantive review pass is claimed. Local
+engineering task receipt: `task_d774804b6b834ad6`. Current checks, deployment,
+snapshot approval and device acceptance remain separate evidence.

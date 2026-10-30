@@ -25,7 +25,6 @@ export function DiscordMessageRow(props: MessageRowLayoutProps) {
     message,
     roomId,
     currentUserId,
-    own,
     sameSenderAsPrev,
     readers,
     senderNameByUserId,
