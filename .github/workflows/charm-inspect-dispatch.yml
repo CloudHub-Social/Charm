@@ -17,7 +17,21 @@ concurrency:
   group: Web server deploy (companion API)
   cancel-in-progress: false
 jobs:
+  validate:
+    runs-on: ubuntu-latest
+    env:
+      TARGET_REF: ${{ github.ref }}
+      SOLE_WRITER: ${{ inputs.sole_writer_coordinated }}
+      BUDGET_HEADROOM: ${{ inputs.budget_headroom_verified }}
+    steps:
+      - name: Require main and operator acknowledgments
+        run: |
+          if [ "$TARGET_REF" != refs/heads/main ] || [ "$SOLE_WRITER" != true ] || [ "$BUDGET_HEADROOM" != true ]; then
+            echo 'Inspection requires main and both operator acknowledgments.'
+            exit 1
+          fi
   r2_precheck:
+    needs: validate
     if: github.ref == 'refs/heads/main' && inputs.sole_writer_coordinated && inputs.budget_headroom_verified
     runs-on: ubuntu-latest
     environment: cloudflare-preview
@@ -50,18 +64,19 @@ jobs:
           print('Destination is empty')
           PY
   inspection_outcome:
-    needs: [r2_precheck, inspect, r2_postcheck]
+    needs: [validate, r2_precheck, inspect, r2_postcheck]
     if: always()
     runs-on: ubuntu-latest
     env:
+      VALIDATE_RESULT: ${{ needs.validate.result }}
       PRECHECK_RESULT: ${{ needs.r2_precheck.result }}
       INSPECT_RESULT: ${{ needs.inspect.result }}
       POSTCHECK_RESULT: ${{ needs.r2_postcheck.result }}
     steps:
       - name: Require completed inspection and destination checks
         run: |
-          if [ "$PRECHECK_RESULT" != success ] || [ "$INSPECT_RESULT" != success ] || [ "$POSTCHECK_RESULT" != success ]; then
-            echo 'Inspection incomplete: precheck, inspection and postcheck must all succeed.'
+          if [ "$VALIDATE_RESULT" != success ] || [ "$PRECHECK_RESULT" != success ] || [ "$INSPECT_RESULT" != success ] || [ "$POSTCHECK_RESULT" != success ]; then
+            echo 'Inspection incomplete: validation, precheck, inspection and postcheck must all succeed.'
             exit 1
           fi
           echo 'Inspection and destination checks completed.'

@@ -115,14 +115,25 @@ class Fixtures(unittest.TestCase):
         workflow=Path(__file__).resolve().parents[1]/'.github/workflows/charm-inspect-dispatch.yml'
         config=yaml.safe_load(workflow.read_text())
         jobs=config['jobs']
+        validation=jobs['validate']['steps'][0]['run']
+        valid={'TARGET_REF':'refs/heads/main','SOLE_WRITER':'true','BUDGET_HEADROOM':'true'}
+        cases=[(valid,0)]
+        for key,bad in [('TARGET_REF','refs/heads/other'),('TARGET_REF',''),('SOLE_WRITER','false'),('BUDGET_HEADROOM','false'),('SOLE_WRITER',''),('BUDGET_HEADROOM','')]:
+            cases.append(({**valid,key:bad},1))
+        for env,expected in cases:
+            result=subprocess.run(['/bin/bash','-c',validation],env=env,capture_output=True)
+            self.assertEqual(result.returncode,expected,env)
+        self.assertEqual(jobs['r2_precheck']['needs'],'validate')
+        self.assertEqual(set(jobs['r2_postcheck']['needs']),{'r2_precheck','inspect'})
+        self.assertIn('always()',jobs['r2_postcheck']['if'])
         for name in ['r2_precheck','inspect']:
             condition=jobs[name]['if']
             self.assertIn('inputs.sole_writer_coordinated',condition)
             self.assertIn('inputs.budget_headroom_verified',condition)
         outcome=jobs['inspection_outcome']
-        self.assertEqual(set(outcome['needs']),{'r2_precheck','inspect','r2_postcheck'})
+        self.assertEqual(set(outcome['needs']),{'validate','r2_precheck','inspect','r2_postcheck'})
         self.assertEqual(outcome['if'],'always()')
-        env_names={'PRECHECK_RESULT':'r2_precheck','INSPECT_RESULT':'inspect','POSTCHECK_RESULT':'r2_postcheck'}
+        env_names={'VALIDATE_RESULT':'validate','PRECHECK_RESULT':'r2_precheck','INSPECT_RESULT':'inspect','POSTCHECK_RESULT':'r2_postcheck'}
         for variable,job in env_names.items():
             self.assertEqual(outcome['env'][variable], '${{ needs.'+job+'.result }}')
         command=outcome['steps'][0]['run']
