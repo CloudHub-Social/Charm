@@ -185,6 +185,11 @@ Ordinary attachments release composer ownership after guarded preflight hands
 the transfer to the account/room-scoped upload controller. Their network transfer
 and cancellation continue in the background without blocking another draft;
 voice preview/send retains its separate ownership until success or discard.
+An ordinary transfer stays assigned to its original room when navigating elsewhere;
+its progress or failure is visible again on returning to that room. Account changes
+and unmount cancel account-bound transfers, while voice conversion/send custody
+also cancels on room change. Preflight results cannot start a transfer after their
+room/account owner changed, and late account results cannot populate a later session.
 
 Integrated qualification remains pending current-head hosted regressions,
 accessibility, visual review and required snapshot approvals. See the

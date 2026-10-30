@@ -199,6 +199,23 @@ drop/paste rejection now uses the existing dismissible upload tray with an
 announced error and explicit retry guidance, without exposing disabled staging
 or clearing the text/voice draft. Regression definitions cover these boundaries.
 
+At 6956de91 all new focused review regressions passed; the existing IRC empty-line
+test identified an empty layout wrapper. At3205d5c1 that assertion passed after
+moving the full-width class onto the rendered reaction fieldset. The remaining
+unit failure exposed a real missed-blur window for the temporary focus anchor;
+cleanup now also checks whether the anchor still owns focus when the listener
+is installed, retaining the disappearance-on-blur assertion.
+
+Duplicate Seer/Codex findings then identified ordinary web uploads being aborted
+on room navigation. Upload records/controllers now retain original account/room
+ownership: ordinary transfers continue across room navigation, with progress or
+errors visible on return; voice work cancels on room change, and all work cancels
+on account change/unmount. A distinct account generation rejects late completion
+even after switching away and back to the same account. Preflight remains scoped
+to the current room. Deferred transport regressions cover original-room errors,
+account cancellation and voice cancellation; current-head hosted qualification is
+still required. This does not change encryption, transport endpoints or flags.
+
 Implementation is in progress, not yet qualified. Exact-head hosted frontend,
 browser, security, axe, current screenshots and substantive review dispositions
 must pass. Existing gallery candidates and snapshot approvals are historical;

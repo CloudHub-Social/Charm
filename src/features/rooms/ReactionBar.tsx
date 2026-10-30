@@ -211,6 +211,10 @@ function ScopedReactionBar({
     if (!retainEmptyAnchor) return;
     const anchor = groupRef.current;
     if (!anchor) return;
+    if (document.activeElement !== anchor) {
+      setRetainEmptyAnchor(false);
+      return;
+    }
     const release = () => setRetainEmptyAnchor(false);
     anchor.addEventListener("blur", release);
     return () => anchor.removeEventListener("blur", release);

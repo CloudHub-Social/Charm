@@ -51,7 +51,9 @@ export function useAttachmentUploads(
   mutationsBlockedRef?: RefObject<boolean>,
   accountId = "",
 ) {
-  const [uploads, setUploads] = useState<PendingUpload[]>([]);
+  const [uploads, setUploads] = useState<
+    Array<PendingUpload & { roomId: string; accountId: string }>
+  >([]);
   const mediaSendPolishEnabled = useFlag("media_send_polish");
   const stripExifOnUpload = useAtomValue(stripExifOnUploadAtom);
   const [maxUploadBytes, setMaxUploadBytes] = useState<number | null>(null);
@@ -67,7 +69,23 @@ export function useAttachmentUploads(
   // Native recorded blobs also use the signal to cancel their in-memory
   // conversion before invoking IPC. Native uploads themselves are cancelled
   // server-side (`cancel_attachment_upload`'s `tokio::select!`).
-  const uploadAbortControllers = useRef<Map<string, AbortController>>(new Map());
+  const activeUploads = useRef(
+    new Map<
+      string,
+      {
+        controller?: AbortController;
+        voice: boolean;
+        roomId: string;
+        accountId: string;
+      }
+    >(),
+  );
+  const accountIdRef = useRef(accountId);
+  const accountGeneration = useRef(0);
+  if (accountIdRef.current !== accountId) {
+    accountIdRef.current = accountId;
+    accountGeneration.current += 1;
+  }
   const failedVoiceUploads = useRef<WeakMap<File, string>>(new WeakMap());
   const ownerGeneration = useRef(0);
   const ownerScope = `${accountId}:${roomId}`;
@@ -80,19 +98,40 @@ export function useAttachmentUploads(
 
   useEffect(() => {
     ownerDisposed.current = false;
-    const controllers = uploadAbortControllers.current;
+    const transfers = activeUploads.current;
     return () => {
       ownerDisposed.current = true;
       ownerGeneration.current += 1;
-      for (const [txnId, controller] of controllers) {
-        controller.abort();
+      accountGeneration.current += 1;
+      for (const [txnId, transfer] of transfers) {
+        transfer.controller?.abort();
         cancelAttachmentUpload(txnId).catch(logAndIgnore);
       }
-      controllers.clear();
+      transfers.clear();
     };
-  }, [ownerScope]);
+  }, [accountId]);
 
   useEffect(() => {
+    const transfers = activeUploads.current;
+    return () => {
+      // Navigation invalidates voice conversion/capture custody. Ordinary
+      // transfers already handed to transport stay owned by their original room.
+      const cancelled = new Set<string>();
+      for (const [txnId, transfer] of transfers) {
+        if (!transfer.voice || transfer.roomId !== roomId || transfer.accountId !== accountId)
+          continue;
+        transfer.controller?.abort();
+        cancelAttachmentUpload(txnId).catch(logAndIgnore);
+        transfers.delete(txnId);
+        cancelled.add(txnId);
+      }
+      if (cancelled.size && !ownerDisposed.current)
+        setUploads((prev) => prev.filter((upload) => !cancelled.has(upload.txnId)));
+    };
+  }, [roomId, accountId]);
+
+  useEffect(() => {
+    setMaxUploadBytes(null);
     if (!mediaSendPolishEnabled) return;
     let cancelled = false;
     getMediaConfig()
@@ -103,11 +142,11 @@ export function useAttachmentUploads(
     return () => {
       cancelled = true;
     };
-  }, [mediaSendPolishEnabled]);
+  }, [mediaSendPolishEnabled, accountId]);
 
   useEffect(() => {
     setUploads([]);
-  }, [ownerScope]);
+  }, [accountId]);
 
   useEffect(() => {
     const unlisten = onUploadProgress((progress) => {
@@ -136,6 +175,7 @@ export function useAttachmentUploads(
   ): Promise<boolean> {
     if (!roomId || ownerDisposed.current || mutationsBlockedRef?.current) return false;
     const generation = ownerGeneration.current;
+    const accountVersion = accountGeneration.current;
     const ownerIsCurrent = () =>
       generation === ownerGeneration.current &&
       roomIdRef.current === roomId &&
@@ -167,6 +207,8 @@ export function useAttachmentUploads(
         ...prev,
         {
           txnId,
+          roomId,
+          accountId,
           filename,
           sent: 0,
           total: 0,
@@ -181,9 +223,17 @@ export function useAttachmentUploads(
     // tombstone received during either awaited preflight therefore cannot
     // create an upload row or reach the native/web transport.
     if (mutationsBlockedRef?.current) return false;
-    setUploads((prev) => [...prev, { txnId, filename, sent: 0, total: 0, failed: false }]);
+    setUploads((prev) => [
+      ...prev,
+      { txnId, roomId, accountId, filename, sent: 0, total: 0, failed: false },
+    ]);
     const abortController = isWebBuild() || voice ? new AbortController() : undefined;
-    if (abortController) uploadAbortControllers.current.set(txnId, abortController);
+    activeUploads.current.set(txnId, {
+      controller: abortController,
+      voice: !!voice,
+      roomId,
+      accountId,
+    });
     try {
       const sending = sendAttachment(
         roomId,
@@ -198,14 +248,24 @@ export function useAttachmentUploads(
       // cancellation. Ordinary uploads may continue behind another draft.
       onStarted?.();
       await sending;
-      if (generation !== ownerGeneration.current) return false;
+      if (
+        abortController?.signal.aborted ||
+        ownerDisposed.current ||
+        accountGeneration.current !== accountVersion
+      )
+        return false;
       setUploads((prev) => prev.filter((u) => u.txnId !== txnId));
       return true;
     } catch (err) {
       // A dismissed-while-uploading row is already gone from `uploads` (see
       // dismissUpload) — its abort landing here as a rejected fetch isn't a
       // failure to surface, just this request unwinding.
-      if (abortController?.signal.aborted || generation !== ownerGeneration.current) return false;
+      if (
+        abortController?.signal.aborted ||
+        ownerDisposed.current ||
+        accountGeneration.current !== accountVersion
+      )
+        return false;
       console.error(err);
       const errorMessage = err instanceof Error ? err.message : String(err);
       setUploads((prev) =>
@@ -214,7 +274,7 @@ export function useAttachmentUploads(
       if (voice && file instanceof File) failedVoiceUploads.current.set(file, txnId);
       return false;
     } finally {
-      uploadAbortControllers.current.delete(txnId);
+      activeUploads.current.delete(txnId);
     }
   }
 
@@ -223,7 +283,7 @@ export function useAttachmentUploads(
       const upload = prev.find((u) => u.txnId === txnId);
       if (upload && !upload.failed) {
         cancelAttachmentUpload(txnId).catch(logAndIgnore);
-        uploadAbortControllers.current.get(txnId)?.abort();
+        activeUploads.current.get(txnId)?.controller?.abort();
       }
       return prev.filter((u) => u.txnId !== txnId);
     });
@@ -237,11 +297,14 @@ export function useAttachmentUploads(
   }, []);
 
   function rejectFile(file: string | File) {
+    if (!roomId) return;
     const filename = typeof file === "string" ? (file.split(/[/\\]/).pop() ?? file) : file.name;
     setUploads((prev) => [
       ...prev,
       {
         txnId: `blocked-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        roomId,
+        accountId,
         filename,
         sent: 0,
         total: 0,
@@ -253,7 +316,7 @@ export function useAttachmentUploads(
   }
 
   return {
-    uploads,
+    uploads: uploads.filter((upload) => upload.roomId === roomId && upload.accountId === accountId),
     handleAttachFile,
     dismissUpload,
     dismissFailedUploadForFile,
