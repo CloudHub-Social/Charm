@@ -10,6 +10,23 @@ sidebar:
 
 ## Implementation status
 
+### Post-CI P5 integration — qualification pending
+
+The refreshed model separates compact (`<768px`), medium (`768–1199px`) and wide
+(`>=1200px`) from pointer/hover capability. Under default-off `ux_refresh_v1`,
+compact pushes conversation detail with Back and hides root tabs, medium context
+replaces chat, and wide context remains optional beside chat. Editor, draft,
+scroll and media owners remain mounted across width changes. Focus stays within
+an open context panel across medium/wide resize and returns when it closes.
+Native focused-room state excludes a medium context covering chat; pinned jumps
+close that context and reveal the target. Compact Spaces uses Back before root
+navigation. Existing navigation accessibility and saved preferences remain.
+
+The [single integration ledger](/operations/ux-recovery/) maps preserved source
+revisions and required current-head hosted checks. Browser emulation does not
+prove physical phone/iPad keyboard, safe areas, screen reader, rotation or
+multitasking acceptance. Prior shipped responsive work below remains historical.
+
 **Shipped 2026-07-14 in [PR #242](https://github.com/CloudHub-Social/Charm/pull/242)**
 (`39f58f8d1f549e46a98a627178338da4272efc4c`).
 
@@ -163,3 +180,14 @@ None — pure frontend layout/CSS. No IPC, no Rust.
 - A dedicated mobile QA pass on the native Tauri iOS/Android builds (this spec's
   reproduction surface is the web build; the `dvh`/safe-area fixes help native too,
   but native has its own status-bar/gesture nuances worth a separate check).
+
+## Conversation-width follow-up (2026-10-27)
+
+PR #601 extends the earlier viewport hardening with message-row geometry
+regressions. Ordinary app, timeline, and message content must fit the viewport;
+code, tables, and other intentionally wide content retain their own bounded
+scroll containers. Gutters belong to measured virtualizer items, not to its
+absolutely positioned viewport. Test all message modes at 320/375/390/430 CSS
+pixels and preserve existing scroll-anchor checks. See the
+[implementation ledger](/operations/ux-recovery/) for evidence and scope.
+Native acceptance remains separate from the browser fixtures.

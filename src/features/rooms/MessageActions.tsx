@@ -1,3 +1,4 @@
+import { useMessageActionPosition } from "./useMessageActionPosition";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import {
   Bookmark,
@@ -128,6 +129,8 @@ export interface MessageActionsProps {
 export interface MessageActionsHandle {
   startLongPress: () => void;
   cancelLongPress: () => void;
+  /** Opens the same menu from a keyboard or pointer context-menu request. */
+  openMenu?: () => void;
 }
 
 /**
@@ -145,6 +148,7 @@ export interface MessageActionsHandle {
  * sibling react-shortcut button are both 44x44px hit targets per the
  * spec's touch-target minimum.
  */
+
 export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsProps>(
   function MessageActions(
     {
@@ -183,6 +187,7 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
     },
     ref,
   ) {
+    const surfaceRef = useMessageActionPosition();
     const messageActionParityEnabled = useFlag("message_action_parity");
     const bookmarksEnabled = useFlag("bookmarks");
     const [menuOpen, setMenuOpen] = useState(false);
@@ -207,7 +212,11 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
       }
     }
 
-    useImperativeHandle(ref, () => ({ startLongPress, cancelLongPress }), []);
+    useImperativeHandle(
+      ref,
+      () => ({ startLongPress, cancelLongPress, openMenu: () => setMenuOpen(true) }),
+      [],
+    );
 
     // A touch-and-hold that outlives the item (e.g. the message list re-renders
     // out from under it after a `timeline:update`) must not fire `setMenuOpen`
@@ -222,7 +231,13 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
 
     return (
       <div
-        className={cn("flex items-center gap-1", className)}
+        ref={surfaceRef}
+        data-message-actions
+        className={cn(
+          "flex items-center gap-1",
+          className,
+          menuOpen && "pointer-events-auto opacity-100",
+        )}
         // stopPropagation: `ChatShell` forwards the same long-press gesture
         // from the whole message row via the imperative handle above, so
         // without this a touch on this component's own area would bubble up
@@ -257,7 +272,7 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
               type="button"
               aria-label={`React with ${emoji}`}
               onClick={() => react(emoji)}
-              className="flex size-11 items-center justify-center rounded-md text-base hover:bg-secondary"
+              className="flex size-11 shrink-0 items-center justify-center rounded-md text-base hover:bg-secondary [@media(hover:none)]:hidden"
             >
               {emoji}
             </button>
@@ -268,7 +283,7 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
               type="button"
               aria-label="React"
               disabled={disableRelationActions || isUndecrypted}
-              className="flex size-11 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary disabled:pointer-events-none disabled:opacity-40"
+              className="flex size-11 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary disabled:pointer-events-none disabled:opacity-40"
             >
               <SmilePlus size={16} />
             </button>
@@ -313,12 +328,20 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
             <button
               type="button"
               aria-label="More actions"
-              className="flex size-11 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary"
+              className="flex size-11 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary"
             >
               <MoreHorizontal size={16} />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
+          <DropdownMenuContent
+            align="end"
+            onPointerUpCapture={(event) => {
+              // Radix can synthesize a click for a release whose press began
+              // outside the menu. Right-click and macOS Control-click releases
+              // must not select an item merely by opening the menu.
+              if (event.button !== 0 || event.ctrlKey) event.preventDefault();
+            }}
+          >
             {!isRedacted && (
               <>
                 {canReply && (

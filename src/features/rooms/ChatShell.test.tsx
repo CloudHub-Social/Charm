@@ -58,16 +58,27 @@ vi.mock("./VoiceRecorder", () => ({
   VoiceRecorder: ({
     mobile,
     onCaptureChange,
+    onBusyChange,
   }: {
     mobile: boolean;
     onCaptureChange?: (capturing: boolean) => void;
+    onBusyChange?: (busy: boolean) => void;
   }) => {
-    useEffect(() => () => onCaptureChange?.(false), [onCaptureChange]);
+    useEffect(
+      () => () => {
+        onCaptureChange?.(false);
+        onBusyChange?.(false);
+      },
+      [onCaptureChange, onBusyChange],
+    );
     return (
       <button
         type="button"
         data-testid="voice-gesture-mode"
-        onClick={() => onCaptureChange?.(true)}
+        onClick={() => {
+          onCaptureChange?.(true);
+          onBusyChange?.(true);
+        }}
       >
         {mobile ? "mobile" : "desktop"}
       </button>
@@ -88,6 +99,7 @@ const sendReply = vi.fn().mockResolvedValue("txn-1");
 const editMessage = vi.fn().mockResolvedValue(undefined);
 const redactEvent = vi.fn().mockResolvedValue(undefined);
 const toggleReaction = vi.fn<(...args: unknown[]) => Promise<ReactionToggleResult>>();
+const getReactionDetails = vi.fn();
 const resendMessage = vi.fn().mockResolvedValue(undefined);
 const discardFailedMessage = vi.fn().mockResolvedValue(true);
 const setRoomSendQueueReadOnly = vi.fn().mockResolvedValue(0);
@@ -237,6 +249,7 @@ vi.mock("@/lib/matrix", () => ({
   editMessage: (...args: unknown[]) => editMessage(...args),
   redactEvent: (...args: unknown[]) => redactEvent(...args),
   toggleReaction: (...args: unknown[]) => toggleReaction(...args),
+  getReactionDetails: (...args: unknown[]) => getReactionDetails(...args),
   resendMessage: (...args: unknown[]) => resendMessage(...args),
   discardFailedMessage: (...args: unknown[]) => discardFailedMessage(...args),
   setRoomSendQueueReadOnly: (...args: unknown[]) => setRoomSendQueueReadOnly(...args),
@@ -314,6 +327,7 @@ vi.mock("./Composer", () => ({
   Composer: forwardRef(function Composer(
     props: {
       placeholder: string;
+      canSubmit?: () => boolean;
       onSubmit: (content: {
         body: string;
         formattedBody: string | null;
@@ -326,6 +340,7 @@ vi.mock("./Composer", () => ({
   ) {
     const [value, setValue] = useState("");
     const commit = () => {
+      if (props.canSubmit?.() === false) return;
       const trimmed = value.trim();
       if (!trimmed) return;
       if (trimmed.startsWith("/")) {
@@ -441,6 +456,9 @@ describe("ChatShell", () => {
     redactEvent.mockReset().mockResolvedValue(undefined);
     canRedactOthers.mockReset().mockResolvedValue(true);
     toggleReaction.mockReset();
+    getReactionDetails
+      .mockReset()
+      .mockResolvedValue([{ sender: "@alice:localhost", origin_server_ts: 1 }]);
     resendMessage.mockReset().mockResolvedValue(undefined);
     discardFailedMessage.mockReset().mockResolvedValue(true);
     setRoomSendQueueReadOnly.mockReset().mockResolvedValue(0);
@@ -624,7 +642,7 @@ describe("ChatShell", () => {
     expect(screen.queryByTestId("composer-shell")).not.toBeInTheDocument();
   });
 
-  it("disables server-mutating message actions in a tombstoned room", async () => {
+  it("blocks tombstoned message mutations while retaining read-only reaction details", async () => {
     getRoomDetails.mockResolvedValue({
       room_id: room.room_id,
       is_encrypted: false,
@@ -657,8 +675,14 @@ describe("ChatShell", () => {
     );
 
     const reaction = await screen.findByRole("button", { name: /👍/, pressed: false });
-    expect(reaction).toBeDisabled();
+    expect(reaction).toBeEnabled();
+    expect(reaction).toHaveAccessibleName("View 1 reactors for 👍");
     fireEvent.click(reaction);
+    expect(await screen.findByRole("dialog")).toBeVisible();
+    expect(getReactionDetails).toHaveBeenCalledWith(room.room_id, "$old:localhost", "👍");
+    expect(toggleReaction).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /^Close$/ }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(toggleReaction).not.toHaveBeenCalled();
 
     fireEvent.pointerDown(screen.getByRole("button", { name: "More actions" }), {
@@ -4868,7 +4892,7 @@ describe("ChatShell", () => {
     expect(row).toBeTruthy();
 
     vi.useFakeTimers();
-    fireEvent.touchStart(row!);
+    fireEvent.touchStart(row!, { touches: [{ identifier: 1, target: row }] });
     vi.advanceTimersByTime(500);
     vi.useRealTimers();
 
@@ -5601,6 +5625,79 @@ describe("ChatShell", () => {
         undefined, // Ordinary attachments must not carry voice metadata.
       ),
     );
+  });
+
+  it("keeps flag-off attachment staging hidden during a busy voice draft", async () => {
+    vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
+    mockUseFlag.mockImplementation((key) => key !== "media_send_polish");
+    renderChatShell();
+    const textarea = await screen.findByPlaceholderText("Message general");
+    fireEvent.change(textarea, { target: { value: "Keep this draft" } });
+    fireEvent.click(screen.getByTestId("voice-gesture-mode"));
+    fireEvent.drop(textarea, { dataTransfer: { files: [new File(["fake"], "hidden.png")] } });
+    expect(screen.queryByRole("button", { name: "Send attachment" })).not.toBeInTheDocument();
+    expect(screen.getByText("hidden.png")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(/^File was not attached\./);
+    expect(screen.getByRole("button", { name: "Dismiss failed upload hidden.png" })).toBeEnabled();
+    expect(sendAttachment).not.toHaveBeenCalled();
+    expect(textarea).toHaveValue("Keep this draft");
+  });
+
+  it("retains only a cancellation path when media polish is disabled with a staged file", async () => {
+    vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
+    const view = renderChatShell();
+    const textarea = await screen.findByPlaceholderText("Message general");
+    fireEvent.change(textarea, { target: { value: "Keep my text" } });
+    fireEvent.drop(textarea, { dataTransfer: { files: [new File(["fake"], "retained.png")] } });
+    await screen.findByRole("button", { name: "Send attachment" });
+    mockUseFlag.mockImplementation((key) => key !== "media_send_polish");
+    view.rerender(
+      <JotaiProvider store={view.store}>
+        <ChatShell room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    expect(screen.queryByRole("button", { name: "Send attachment" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Attachment caption" })).not.toBeInTheDocument();
+    expect(screen.getByText("retained.png")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel attachment" }));
+    expect(screen.queryByText("retained.png")).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Message general")).toHaveValue("Keep my text");
+    expect(sendAttachment).not.toHaveBeenCalled();
+  });
+
+  it("releases ordinary upload ownership after preflight while the network remains pending", async () => {
+    vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
+    let finishUpload!: () => void;
+    sendAttachment.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishUpload = resolve;
+        }),
+    );
+    let finishPreflight!: (limit: number) => void;
+    getMediaConfig.mockReturnValue(
+      new Promise<number>((resolve) => {
+        finishPreflight = resolve;
+      }),
+    );
+    renderChatShell();
+    const textarea = await screen.findByPlaceholderText("Message general");
+    const file = new File(["fake"], "background.png", { type: "image/png" });
+    fireEvent.change(textarea, { target: { value: "Keep this draft through preflight" } });
+    fireEvent.drop(textarea, { dataTransfer: { files: [file] } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send attachment" }));
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(textarea).toHaveValue("Keep this draft through preflight");
+    expect(sendMessage).not.toHaveBeenCalled();
+    await act(async () => finishPreflight(100 * 1024 * 1024));
+    await waitFor(() => expect(sendAttachment).toHaveBeenCalledOnce());
+    // Upload is still unresolved; only the transfer's controller owns it now.
+    expect(screen.getByText("background.png")).toBeInTheDocument();
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    await waitFor(() => expect(sendMessage).toHaveBeenCalled());
+    expect(textarea).toHaveValue("");
+    await act(async () => finishUpload());
+    await waitFor(() => expect(screen.queryByText("background.png")).not.toBeInTheDocument());
   });
 
   it("aborts the in-flight web upload's fetch when dismissed", async () => {

@@ -34,13 +34,13 @@ export default defineConfig({
       thresholds: {
         // Deliberately enforced, unlike Charm 1.0's unenforced coverage collection.
         // These are a RATCHET: set to just under current actual coverage.
-        // PR #580 hosted CI run 38495367826: statements 86.34%, branches
-        // 84.49%, functions 80.01%, lines 88.52%. Never lower a floor to make CI pass.
+        // Preserve both ratchets: PR580 functions 80.0 and PR566 branches 84.5.
+        // Never lower a floor to make integration pass.
         // When tests raise coverage, raise these floors in the same PR.
         lines: 88.5,
         statements: 86.3,
         functions: 80.0,
-        branches: 84.4,
+        branches: 84.5,
       },
     },
   },

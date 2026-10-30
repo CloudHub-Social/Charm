@@ -48,6 +48,43 @@ function pasteText(editable: Element, text: string, matchFormatting = false) {
 }
 
 describe("Composer", () => {
+  it.each(["private draft", "/plain private command"])(
+    "retains blocked draft before Enter and imperative submit: %s",
+    async (text) => {
+      flags.composerParity = true;
+      const ref = createRef<ComposerHandle>();
+      const onSubmit = vi.fn();
+      const onSlashCommand = vi.fn();
+      let allowed = false;
+      render(
+        <Composer
+          ref={ref}
+          roomId="!guard:example.org"
+          mode="send"
+          placeholder="Guarded draft"
+          canSubmit={() => allowed}
+          onSubmit={onSubmit}
+          onSlashCommand={onSlashCommand}
+          onEscape={vi.fn()}
+          onTypingInput={vi.fn()}
+        />,
+      );
+      const editable = await screen.findByLabelText("Guarded draft");
+      pasteText(editable, text);
+      fireEvent.keyDown(editable, { key: "Enter" });
+      ref.current?.submit();
+      expect(editable).toHaveTextContent(text);
+      expect(onSubmit).not.toHaveBeenCalled();
+      expect(onSlashCommand).not.toHaveBeenCalled();
+      allowed = true;
+      fireEvent.keyDown(editable, { key: "Enter" });
+      await waitFor(() =>
+        expect(onSubmit.mock.calls.length + onSlashCommand.mock.calls.length).toBe(1),
+      );
+      expect(editable.textContent).toBe("");
+    },
+  );
+
   it("dispatches message slash commands while replying", async () => {
     flags.composerParity = true;
     const onSlashCommand = vi.fn().mockResolvedValue(true);
@@ -761,3 +798,52 @@ describe("Composer", () => {
     expect(await screen.findByText("bold text")).toBeInTheDocument();
   });
 });
+
+it.each(["myroomnick", "startdm"] as const)(
+  "dispatches /%s in reply mode without sending chat text and retains disabled drafts",
+  async (command) => {
+    flags.composerParity = false;
+    const onSlashCommand = vi.fn();
+    const onSubmit = vi.fn();
+    const { rerender } = render(
+      <Composer
+        roomId={`!${command}:example.org`}
+        mode="reply"
+        placeholder="Message general"
+        onSubmit={onSubmit}
+        onSlashCommand={onSlashCommand}
+        onEscape={vi.fn()}
+        onTypingInput={vi.fn()}
+      />,
+    );
+    const editable = await screen.findByLabelText("Message general");
+    pasteText(editable, `/${command} @alice:example.org`);
+    fireEvent.keyDown(editable, { key: "Enter" });
+    expect(onSlashCommand).toHaveBeenLastCalledWith({
+      command,
+      args: ["@alice:example.org"],
+      disabled: true,
+    });
+    expect(editable).toHaveTextContent(`/${command} @alice:example.org`);
+    flags.composerParity = true;
+    rerender(
+      <Composer
+        roomId={`!${command}:example.org`}
+        mode="reply"
+        placeholder="Message general"
+        onSubmit={onSubmit}
+        onSlashCommand={onSlashCommand}
+        onEscape={vi.fn()}
+        onTypingInput={vi.fn()}
+      />,
+    );
+    fireEvent.keyDown(editable, { key: "Enter" });
+    expect(onSlashCommand).toHaveBeenLastCalledWith({
+      command,
+      args: ["@alice:example.org"],
+      action: true,
+    });
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(editable.textContent).toBe("");
+  },
+);

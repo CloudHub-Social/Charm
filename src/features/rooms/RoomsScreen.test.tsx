@@ -2,11 +2,16 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { createStore, Provider } from "jotai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RoomsScreen } from "./RoomsScreen";
-import { membersDrawerOpenAtomFamily, roomSettingsAtom } from "@/features/room-info/roomInfoAtoms";
+import {
+  membersDrawerOpenAtomFamily,
+  pinnedMessagesDrawerOpenAtomFamily,
+  roomSettingsAtom,
+} from "@/features/room-info/roomInfoAtoms";
 import type { RoomSummary } from "@/lib/matrix";
 
 const mockUseAdaptiveLayout = vi.fn(() => "desktop");
-const mockUseFlag = vi.fn(() => true);
+const mockAdaptiveWidth = vi.fn(() => "wide");
+const mockUseFlag = vi.fn<(key: string) => boolean>(() => true);
 const mockUseFeatureFlagPersistenceVersion = vi.fn(() => 0);
 const mockUseFeatureFlagPersistenceSettled = vi.fn(() => true);
 const mockIsWebBuild = vi.fn(() => false);
@@ -22,11 +27,17 @@ const mockUseRoomDetails = vi.fn((roomId: string | null, refetchOnMount = false)
   };
 });
 vi.mock("@/features/shell/useAdaptiveLayout", () => ({
-  useAdaptiveLayout: () => mockUseAdaptiveLayout(),
+  useAdaptiveLayout: (options?: { adaptive: boolean }) =>
+    options?.adaptive
+      ? { width: mockUseAdaptiveLayout() === "mobile" ? "compact" : mockAdaptiveWidth() }
+      : mockUseAdaptiveLayout(),
+  useAdaptiveLayoutState: () => ({
+    width: mockUseAdaptiveLayout() === "mobile" ? "compact" : mockAdaptiveWidth(),
+  }),
 }));
 
 vi.mock("@/featureFlags", () => ({
-  useFlag: () => mockUseFlag(),
+  useFlag: (key: string) => mockUseFlag(key),
   useFeatureFlagPersistenceVersion: () => mockUseFeatureFlagPersistenceVersion(),
   useFeatureFlagPersistenceSettled: () => mockUseFeatureFlagPersistenceSettled(),
 }));
@@ -83,6 +94,14 @@ vi.mock("@/features/room-info/MembersDrawer", () => ({
         navigate-to-new-dm
       </button>
     </div>
+  ),
+}));
+
+vi.mock("@/features/room-info/PinnedMessagesPanel", () => ({
+  PinnedMessagesPanel: ({ onJumpToMessage }: { onJumpToMessage: (eventId: string) => void }) => (
+    <button type="button" onClick={() => onJumpToMessage("$pinned")}>
+      jump-to-pinned-message
+    </button>
   ),
 }));
 
@@ -313,6 +332,7 @@ function room(overrides: Partial<RoomSummary>): RoomSummary {
 
 beforeEach(() => {
   mockUseAdaptiveLayout.mockReset().mockReturnValue("desktop");
+  mockAdaptiveWidth.mockReset().mockReturnValue("wide");
   mockUseFlag.mockReset().mockReturnValue(true);
   mockUseFeatureFlagPersistenceVersion.mockReset().mockReturnValue(0);
   mockUseFeatureFlagPersistenceSettled.mockReset().mockReturnValue(true);
@@ -497,6 +517,76 @@ describe("RoomsScreen", () => {
     expect(
       screen.queryByRole("button", { name: `accept:${invite.room_id}` }),
     ).not.toBeInTheDocument();
+  });
+
+  it.each(["medium", "wide"])("reveals the pinned destination at %s width", async (width) => {
+    mockAdaptiveWidth.mockReturnValue(width);
+    const store = createStore();
+    render(
+      <Provider store={store}>
+        <RoomsScreen
+          currentUserId="@me:example.org"
+          deepLinkRoomId={null}
+          onDeepLinkConsumed={() => {}}
+          onLoggedOut={() => {}}
+        />
+      </Provider>,
+    );
+    await screen.findByText("chat-content:!a:example.org");
+    act(() => store.set(pinnedMessagesDrawerOpenAtomFamily("!a:example.org"), true));
+    fireEvent.click(await screen.findByRole("button", { name: "jump-to-pinned-message" }));
+    expect(screen.getByText("jump-to-event:$pinned")).toBeVisible();
+    expect(store.get(pinnedMessagesDrawerOpenAtomFamily("!a:example.org"))).toBe(width === "wide");
+  });
+
+  it("updates native focus when a visible context panel replaces chat at medium width", async () => {
+    const focus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const store = createStore();
+    const ui = () => (
+      <Provider store={store}>
+        <RoomsScreen
+          currentUserId="@me:example.org"
+          deepLinkRoomId={null}
+          onDeepLinkConsumed={() => {}}
+          onLoggedOut={() => {}}
+        />
+      </Provider>
+    );
+    const view = render(ui());
+    await screen.findByText("chat-content:!a:example.org");
+    await waitFor(() => expect(setFocusedRoom).toHaveBeenLastCalledWith("!a:example.org"));
+    act(() => store.set(membersDrawerOpenAtomFamily("!a:example.org"), true));
+    mockAdaptiveWidth.mockReturnValue("medium");
+    view.rerender(ui());
+    await waitFor(() => expect(setFocusedRoom).toHaveBeenLastCalledWith(null));
+    act(() => store.set(membersDrawerOpenAtomFamily("!a:example.org"), false));
+    await waitFor(() => expect(setFocusedRoom).toHaveBeenLastCalledWith("!a:example.org"));
+    focus.mockRestore();
+  });
+
+  it("restores medium chat focus when pinning is disabled with its drawer atom still open", async () => {
+    const focus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    mockAdaptiveWidth.mockReturnValue("medium");
+    const store = createStore();
+    store.set(pinnedMessagesDrawerOpenAtomFamily("!a:example.org"), true);
+    const ui = () => (
+      <Provider store={store}>
+        <RoomsScreen
+          currentUserId="@me:example.org"
+          deepLinkRoomId={null}
+          onDeepLinkConsumed={() => {}}
+          onLoggedOut={() => {}}
+        />
+      </Provider>
+    );
+    const view = render(ui());
+    await screen.findByText("chat-content:!a:example.org");
+    await waitFor(() => expect(setFocusedRoom).toHaveBeenLastCalledWith(null));
+    mockUseFlag.mockImplementation((key) => key !== "message_pinning");
+    view.rerender(ui());
+    await waitFor(() => expect(setFocusedRoom).toHaveBeenLastCalledWith("!a:example.org"));
+    expect(store.get(pinnedMessagesDrawerOpenAtomFamily("!a:example.org"))).toBe(true);
+    focus.mockRestore();
   });
 
   it("auto-selects the first room and tells Rust it has focus", async () => {
@@ -1033,7 +1123,11 @@ describe("RoomsScreen", () => {
       />,
     );
     await screen.findByText("chat-content:!room:example.org");
-
+    // AppShell reveals the selected room in an effect; mounted content can
+    // precede that visibility update. Wait for the actual accessible Back control.
+    const back = await screen.findByRole("button", { name: "back-to-chats" });
+    expect(back).toBeVisible();
+    fireEvent.click(back);
     fireEvent.click(screen.getByRole("button", { name: "Spaces" }));
 
     expect(screen.getByRole("heading", { name: /^Spaces$/ })).toBeInTheDocument();

@@ -47,6 +47,7 @@ test("copies the canonical permalink for a sent message", async ({ page, context
   const row = page
     .getByText("copy my link", { exact: true })
     .locator("xpath=ancestor::*[contains(@class, 'group')][1]");
+  await row.hover();
   await row.getByRole("button", { name: "More actions" }).click();
   await page.getByRole("menuitem", { name: "Copy link" }).click();
 
@@ -102,6 +103,7 @@ test("send, react, edit, reply, and delete a message", async ({ page }) => {
   await expect(originalRow.getByRole("button", { name: "Add reaction" })).toHaveCount(0);
 
   // --- react ---
+  await originalRow.hover();
   await originalRow.getByRole("button", { name: "React", exact: true }).click();
   // Scoped to the popover content: with `message_action_parity` on, the
   // quick-react row (Spec 37) also renders a same-labelled "React with 👍"
@@ -111,6 +113,7 @@ test("send, react, edit, reply, and delete a message", async ({ page }) => {
     .locator('[data-slot="popover-content"]')
     .getByRole("button", { name: "React with 👍" })
     .click();
+  await expect(page.locator('[data-slot="popover-content"]')).toHaveCount(0);
   // Scoped to the pressed reaction chip: the quick-react row (Spec 37) also
   // renders a same-emoji "React with 👍" button in this row, so an unscoped
   // text query would match both it and the chip.
@@ -120,6 +123,7 @@ test("send, react, edit, reply, and delete a message", async ({ page }) => {
   await captureSnapshot(page, "message-actions-reacted");
 
   // --- edit ---
+  await originalRow.hover();
   await originalRow.getByRole("button", { name: "More actions" }).click();
   await page.getByRole("menuitem", { name: "Edit" }).click();
   await expect(page.getByText("Editing message")).toBeVisible();
@@ -134,6 +138,7 @@ test("send, react, edit, reply, and delete a message", async ({ page }) => {
     .locator("xpath=ancestor::*[contains(@class, 'group')][1]");
 
   // --- reply ---
+  await editedRow.hover();
   await editedRow.getByRole("button", { name: "More actions" }).click();
   await page.getByRole("menuitem", { name: "Reply" }).click();
   await expect(page.getByText(`Replying to ${USER_ID}`)).toBeVisible();
@@ -147,6 +152,7 @@ test("send, react, edit, reply, and delete a message", async ({ page }) => {
   await captureSnapshot(page, "message-actions-replied");
 
   // --- delete ---
+  await replyRow.hover();
   await replyRow.getByRole("button", { name: "More actions" }).click();
   await page.getByRole("menuitem", { name: "Delete" }).click();
   await expect(page.getByRole("heading", { name: "Delete message?" })).toBeVisible();
@@ -176,6 +182,7 @@ test("opening More-actions still closes another already-open Radix popover on th
     .getByText("cross-popover test", { exact: true })
     .locator("xpath=ancestor::*[contains(@class, 'group')][1]");
 
+  await row.hover();
   await row.getByRole("button", { name: "React", exact: true }).click();
   // Scoped to the popover content: with `message_action_parity` on, the
   // quick-react row (Spec 37) also renders a persistent same-labelled
@@ -186,6 +193,13 @@ test("opening More-actions still closes another already-open Radix popover on th
     .getByRole("button", { name: "React with 👍" });
   await expect(popoverReactWithThumbsUp).toBeVisible();
 
+  // A portalled picker owns focus and can cover the message. Its toolbar
+  // must remain usable without hovering the obscured message or forcing clicks.
+  await popoverReactWithThumbsUp.focus();
+  await page.mouse.move(4, 4);
+  const toolbar = row.locator("[data-message-actions]");
+  await expect(toolbar).toHaveCSS("opacity", "1");
+  await expect(toolbar).toHaveCSS("pointer-events", "auto");
   await row.getByRole("button", { name: "More actions" }).click();
 
   // The click both opened the dropdown (not a #226 self-dismiss no-op)...
@@ -203,6 +217,7 @@ test("views raw event source for a sent message", async ({ page, context }) => {
   const row = page
     .getByText("show me the source", { exact: true })
     .locator("xpath=ancestor::*[contains(@class, 'group')][1]");
+  await row.hover();
   await row.getByRole("button", { name: "More actions" }).click();
   await page.getByRole("menuitem", { name: "View source" }).click();
 
@@ -246,6 +261,7 @@ test("reports another user's message with a reason", async ({ page }) => {
   const row = page
     .getByText("reportable message", { exact: true })
     .locator("xpath=ancestor::*[contains(@class, 'group')][1]");
+  await row.hover();
   await row.getByRole("button", { name: "More actions" }).click();
   await page.getByRole("menuitem", { name: "Report" }).click();
   await expect(page.getByRole("heading", { name: "Report message?" })).toBeVisible();
@@ -265,6 +281,7 @@ test("views edit history for an edited message", async ({ page }) => {
   const originalRow = page
     .getByText("original body", { exact: true })
     .locator("xpath=ancestor::*[contains(@class, 'group')][1]");
+  await originalRow.hover();
   await originalRow.getByRole("button", { name: "More actions" }).click();
   await page.getByRole("menuitem", { name: "Edit" }).click();
   await composer.fill("edited body");
@@ -274,6 +291,7 @@ test("views edit history for an edited message", async ({ page }) => {
   const editedRow = page
     .getByText("edited body", { exact: true })
     .locator("xpath=ancestor::*[contains(@class, 'group')][1]");
+  await editedRow.hover();
   await editedRow.getByRole("button", { name: "More actions" }).click();
   await page.getByRole("menuitem", { name: "Edit history" }).click();
 
@@ -293,6 +311,7 @@ test("shows who reacted in a hover tooltip", async ({ page }) => {
     .getByText("react to me", { exact: true })
     .locator("xpath=ancestor::*[contains(@class, 'group')][1]");
 
+  await row.hover();
   await row.getByRole("button", { name: "React", exact: true }).click();
   await page
     .locator('[data-slot="popover-content"]')
@@ -320,6 +339,7 @@ test("forwards a message to another joined room", async ({ page }) => {
   const row = page
     .getByText("forward me", { exact: true })
     .locator("xpath=ancestor::*[contains(@class, 'group')][1]");
+  await row.hover();
   await row.getByRole("button", { name: "More actions" }).click();
   await page.getByRole("menuitem", { name: "Forward" }).click();
 
@@ -333,4 +353,154 @@ test("forwards a message to another joined room", async ({ page }) => {
 
   await page.getByRole("button", { name: OTHER_ROOM_NAME }).click();
   await expect(page.getByText("forward me", { exact: true })).toBeVisible();
+});
+
+test("native action buttons support keyboard entry and focus return", async ({ page }) => {
+  const composer = page.getByPlaceholder(`Message ${ROOM.name}`);
+  await composer.fill("keyboard action access");
+  await composer.press("Enter");
+  const row = page
+    .getByText("keyboard action access", { exact: true })
+    .locator("xpath=ancestor::*[contains(@class, 'group')][1]");
+  await expect(row).not.toHaveAttribute("tabindex", "0");
+  const more = row.getByRole("button", { name: "More actions" });
+  await more.focus();
+  await expect(row.locator("[data-message-actions]")).toHaveCSS("opacity", "1");
+  await more.press("Enter");
+  await expect(page.getByRole("menuitem", { name: "Reply", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(more).toBeFocused();
+  await captureSnapshot(page, "message-actions-keyboard-focus");
+});
+
+test("opening right-click release cannot select a menu action", async ({ page }) => {
+  const composer = page.getByPlaceholder(`Message ${ROOM.name}`);
+  await composer.fill("Right click must only open actions");
+  await composer.press("Enter");
+  await expect(page.getByText(/sending…/)).toHaveCount(0);
+  const row = page.locator('[id="message-$1"]');
+  await expect(row).toBeVisible();
+  const body = row.getByText("Right click must only open actions", { exact: true });
+  await body.hover();
+  await page.mouse.down({ button: "right" });
+  const reply = page.getByRole("menuitem", { name: "Reply", exact: true });
+  await expect(reply).toBeVisible();
+  // Exercise a release over an actual actionable item after opening the menu
+  // with the same physical button, without dispatching synthetic DOM events.
+  const bounds = await reply.boundingBox();
+  expect(bounds).not.toBeNull();
+  await page.mouse.move(bounds!.x + bounds!.width / 2, bounds!.y + bounds!.height / 2);
+  await page.mouse.up({ button: "right" });
+  await expect(page.getByRole("menu")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Cancel reply" })).toHaveCount(0);
+  await reply.click();
+  await expect(page.getByRole("button", { name: "Cancel reply" })).toBeVisible();
+  await captureSnapshot(page, "message-actions-context-release");
+});
+
+test("opening Control-click release cannot select a menu action", async ({ page }) => {
+  const composer = page.getByPlaceholder(`Message ${ROOM.name}`);
+  await composer.fill("Control click must only open actions");
+  await composer.press("Enter");
+  await expect(page.getByText(/sending…/)).toHaveCount(0);
+  const body = page.getByText("Control click must only open actions", { exact: true });
+  await body.hover();
+  await page.keyboard.down("Control");
+  await page.mouse.down({ button: "left" });
+  // Linux has no native macOS Control-click context request. Keep real pointer
+  // down/up, injecting only that platform-specific context event between them.
+  await body.dispatchEvent("contextmenu", { button: 0, ctrlKey: true });
+  const reply = page.getByRole("menuitem", { name: "Reply", exact: true });
+  await expect(reply).toBeVisible();
+  const bounds = await reply.boundingBox();
+  expect(bounds).not.toBeNull();
+  await page.mouse.move(bounds!.x + bounds!.width / 2, bounds!.y + bounds!.height / 2);
+  await page.mouse.up({ button: "left" });
+  await page.keyboard.up("Control");
+  await expect(page.getByRole("menu")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Cancel reply" })).toHaveCount(0);
+  await reply.click();
+  await expect(page.getByRole("button", { name: "Cancel reply" })).toBeVisible();
+});
+
+test("secondary word selection does not suppress the message menu", async ({ page }) => {
+  const composer = page.getByPlaceholder(`Message ${ROOM.name}`);
+  await composer.fill("Secondary click opens actions");
+  await composer.press("Enter");
+  await expect(page.getByText(/sending…/)).toHaveCount(0);
+  const body = page.getByText("Secondary click opens actions", { exact: true });
+  await body.evaluate((element) => {
+    window.getSelection()!.removeAllRanges();
+    // Linux CI does not establish macOS native behavior. Introduce the word
+    // selection after pointer-down, before React handles the context request.
+    // Linux's mousedown default would clear selection injected any earlier.
+    element.addEventListener(
+      "contextmenu",
+      () => {
+        const node = document.createTreeWalker(element, NodeFilter.SHOW_TEXT).nextNode()!;
+        const range = document.createRange();
+        range.setStart(node, 0);
+        range.setEnd(node, "Secondary".length);
+        window.getSelection()!.removeAllRanges();
+        window.getSelection()!.addRange(range);
+        element.setAttribute("data-selection-at-context", window.getSelection()!.toString());
+      },
+      { capture: true, once: true },
+    );
+  });
+  await body.click({ button: "right", position: { x: 20, y: 15 } });
+  await expect(body).toHaveAttribute("data-selection-at-context", "Secondary");
+  await expect(page.getByRole("menuitem", { name: "Reply", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await captureSnapshot(page, "message-actions-secondary-word-selection");
+});
+
+test("deliberate text selection keeps its native context menu", async ({ page }) => {
+  const composer = page.getByPlaceholder(`Message ${ROOM.name}`);
+  await composer.fill("Keep deliberate selection native");
+  await composer.press("Enter");
+  await expect(page.getByText(/sending…/)).toHaveCount(0);
+  const body = page.getByText("Keep deliberate selection native", { exact: true });
+  await body.evaluate((element) => {
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    selection.addRange(range);
+    element.addEventListener(
+      "contextmenu",
+      (event) => {
+        queueMicrotask(() => {
+          element.setAttribute("data-context-prevented", String(event.defaultPrevented));
+        });
+      },
+      { once: true },
+    );
+  });
+  await body.click({ button: "right" });
+  await expect(body).toHaveAttribute("data-context-prevented", "false");
+  await expect(page.getByRole("menu")).toHaveCount(0);
+  await expect
+    .poll(() => page.evaluate(() => window.getSelection()!.toString()))
+    .toBe("Keep deliberate selection native");
+});
+
+test("selection in another message does not suppress this message's actions", async ({ page }) => {
+  const composer = page.getByPlaceholder(`Message ${ROOM.name}`);
+  for (const content of ["Select this earlier message", "Open this later message"]) {
+    await composer.fill(content);
+    await composer.press("Enter");
+    await expect(page.getByText(/sending…/)).toHaveCount(0);
+  }
+  await page.getByText("Select this earlier message", { exact: true }).evaluate((element) => {
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    selection.addRange(range);
+  });
+  await page.getByText("Open this later message", { exact: true }).click({ button: "right" });
+  await expect(page.getByRole("menuitem", { name: "Reply", exact: true })).toBeVisible();
+  await page.getByRole("menuitem", { name: "Reply", exact: true }).click();
+  await expect(page.getByText("Open this later message", { exact: true })).toHaveCount(2);
 });

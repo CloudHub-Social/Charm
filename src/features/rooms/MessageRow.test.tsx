@@ -254,3 +254,21 @@ describe("MessageRow link previews (Spec 29)", () => {
     );
   });
 });
+
+describe("IRC reaction rows", () => {
+  it("does not reserve a second flex line without reactions", () => {
+    const { container } = renderRow("irc", "No reactions");
+    const row = container.querySelector('[id="message-$1"]')!;
+    // An empty full-width flex child still creates a gap in the compact row.
+    expect(row.querySelector(":scope > .basis-full:empty")).toBeNull();
+  });
+
+  it("keeps real reactions below the text", () => {
+    const { container } = renderRow("irc", "With reactions", false, {
+      reactions: [{ key: "thumbs-up", count: 1, reacted_by_me: false }],
+    });
+    const line = container.querySelector('[id="message-$1"] > .basis-full');
+    expect(line).not.toBeNull();
+    expect(line?.textContent).toContain("thumbs-up");
+  });
+});

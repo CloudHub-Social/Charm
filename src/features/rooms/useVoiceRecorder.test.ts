@@ -160,7 +160,7 @@ describe("useVoiceRecorder", () => {
     );
     const focus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
     const { result } = renderHook(() => useVoiceRecorder());
-    let starting!: Promise<void>;
+    let starting!: Promise<boolean>;
     act(() => {
       starting = result.current.start();
     });
@@ -187,7 +187,7 @@ describe("useVoiceRecorder", () => {
         }),
     );
     const { result } = renderHook(() => useVoiceRecorder());
-    let starting!: Promise<void>;
+    let starting!: Promise<boolean>;
     act(() => {
       starting = result.current.start();
     });
@@ -286,7 +286,7 @@ describe("useVoiceRecorder", () => {
         }),
     );
     const { result } = renderHook(() => useVoiceRecorder());
-    let starting!: Promise<void>;
+    let starting!: Promise<boolean>;
     act(() => {
       starting = result.current.start();
     });
@@ -312,7 +312,7 @@ describe("useVoiceRecorder", () => {
     );
     const { result } = renderHook(() => useVoiceRecorder());
     const stopFromIdleRender = result.current.stop;
-    let starting!: Promise<void>;
+    let starting!: Promise<boolean>;
     act(() => {
       starting = result.current.start();
       stopFromIdleRender();
@@ -357,7 +357,7 @@ describe("useVoiceRecorder", () => {
         }),
     );
     const { result, unmount } = renderHook(() => useVoiceRecorder());
-    let starting!: Promise<void>;
+    let starting!: Promise<boolean>;
     act(() => {
       starting = result.current.start();
     });
@@ -392,7 +392,7 @@ describe("useVoiceRecorder", () => {
         }),
     );
     const { result } = renderHook(() => useVoiceRecorder());
-    let starting!: Promise<void>;
+    let starting!: Promise<boolean>;
     act(() => {
       starting = result.current.start();
     });
@@ -426,7 +426,7 @@ describe("useVoiceRecorder", () => {
         }),
     );
     const { result } = renderHook(() => useVoiceRecorder());
-    let starting!: Promise<void>;
+    let starting!: Promise<boolean>;
     act(() => {
       starting = result.current.start();
     });
@@ -484,5 +484,30 @@ describe("useVoiceRecorder", () => {
     expect(result.current.error).toContain("size limit");
     expect(stopTrack).toHaveBeenCalledOnce();
     expect(createObjectURL).not.toHaveBeenCalled();
+  });
+  it("does not open two permission requests from the same idle render", async () => {
+    let grant!: (value: MediaStream) => void;
+    getUserMedia.mockImplementationOnce(
+      () =>
+        new Promise<MediaStream>((resolve) => {
+          grant = resolve;
+        }),
+    );
+    const { result } = renderHook(() => useVoiceRecorder());
+    const start = result.current.start;
+    let first!: Promise<boolean>;
+    act(() => {
+      first = start();
+      void start();
+    });
+    expect(getUserMedia).toHaveBeenCalledOnce();
+    act(() => result.current.discard());
+    await act(async () => {
+      grant(stream);
+      await first;
+    });
+    expect(stopTrack).toHaveBeenCalledOnce();
+    expect(FakeRecorder.instances).toHaveLength(0);
+    expect(result.current.phase).toBe("idle");
   });
 });

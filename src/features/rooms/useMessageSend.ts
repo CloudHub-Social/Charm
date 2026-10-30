@@ -10,6 +10,9 @@ import {
   ignoreUser,
   unignoreUser,
   joinRoom,
+  getUserProfile,
+  setRoomProfile,
+  startDirectMessage,
 } from "@/lib/matrix";
 import type { ReplyRef, RoomSummary } from "@/lib/matrix";
 import { isMessageSendingCommand, type ParsedSlashCommand } from "./slashCommands";
@@ -29,6 +32,8 @@ interface UseMessageSendOptions {
   setReplyTarget: (reply: ReplyRef | null) => void;
   stopTyping: () => void;
   mutationsBlockedRef?: RefObject<boolean>;
+  currentUserId?: string;
+  onNavigateToRoom?: (roomId: string, signal?: AbortSignal) => void | Promise<void>;
 }
 
 export function useMessageSend({
@@ -39,6 +44,8 @@ export function useMessageSend({
   setReplyTarget,
   stopTyping,
   mutationsBlockedRef,
+  currentUserId = "",
+  onNavigateToRoom,
 }: UseMessageSendOptions) {
   const queryClient = useQueryClient();
   const [commandFeedback, setCommandFeedback] = useState<string | null>(null);
@@ -50,13 +57,41 @@ export function useMessageSend({
   // misattributed to whatever room is showing now.
   const currentRoomIdRef = useRef(roomId);
   const nicknameInFlight = useRef(false);
+  const navigationAbortRef = useRef<AbortController | null>(null);
+  const commandScopeRef = useRef({
+    roomId,
+    currentUserId,
+    roomNicknameInFlight: false,
+    directMessageInFlight: false,
+  });
+  if (
+    commandScopeRef.current.roomId !== roomId ||
+    commandScopeRef.current.currentUserId !== currentUserId
+  ) {
+    commandScopeRef.current = {
+      roomId,
+      currentUserId,
+      roomNicknameInFlight: false,
+      directMessageInFlight: false,
+    };
+  }
+  const parityEnabledRef = useRef(composerParityEnabled);
+  parityEnabledRef.current = composerParityEnabled;
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  useEffect(() => () => navigationAbortRef.current?.abort(), [roomId, currentUserId]);
   currentRoomIdRef.current = roomId;
 
   // Room-scoped, not persistent: a bad-args/permission-denied banner from
   // room A shouldn't still be showing once the user has switched to room B.
   useEffect(() => {
     setCommandFeedback(null);
-  }, [roomId]);
+  }, [roomId, currentUserId]);
 
   // Returns whether the underlying queue call actually succeeded — `ChatShell`
   // uses this to decide whether to scroll to present after a send/reply: if
@@ -136,6 +171,10 @@ export function useMessageSend({
   async function handleSlashCommand(parsed: ParsedSlashCommand): Promise<boolean> {
     if (!room || mutationsBlockedRef?.current) return false;
     const targetRoomId = room.room_id;
+    const targetScope = commandScopeRef.current;
+    const scopeIsCurrent = () => mountedRef.current && commandScopeRef.current === targetScope;
+    const actionIsAllowed = () =>
+      scopeIsCurrent() && parityEnabledRef.current && !mutationsBlockedRef?.current;
     stopTyping();
     try {
       if (mutationsBlockedRef?.current) return false;
@@ -150,12 +189,15 @@ export function useMessageSend({
         const { command, args } = parsed;
         if (
           !args.length ||
-          ((command === "ignore" || command === "unignore" || command === "join") &&
+          ((command === "ignore" ||
+            command === "unignore" ||
+            command === "join" ||
+            command === "startdm") &&
             args.length !== 1)
         ) {
           setCommandFeedback(
-            command === "nick"
-              ? "Usage: /nick <display name>"
+            command === "nick" || command === "myroomnick"
+              ? `Usage: /${command} <display name>`
               : command === "join"
                 ? "Usage: /join <room id or alias>"
                 : `Usage: /${command} <user id>${command === "unban" ? " [reason]" : ""}`,
@@ -164,6 +206,48 @@ export function useMessageSend({
         }
         try {
           switch (command) {
+            case "myroomnick":
+              if (targetScope.roomNicknameInFlight) {
+                setCommandFeedback(
+                  "A room nickname update is already in progress. Try again after it finishes.",
+                );
+                return false;
+              }
+              targetScope.roomNicknameInFlight = true;
+              try {
+                if (!currentUserId) throw new Error("No signed-in user");
+                const profile = await getUserProfile(currentUserId, targetRoomId, false);
+                // A profile read must never dispatch a second IPC call for a
+                // different active account, room, or newly read-only room.
+                if (!actionIsAllowed()) return false;
+                await setRoomProfile(targetRoomId, args.join(" "), profile.room_avatar_url);
+                if (!actionIsAllowed()) return false;
+                void queryClient.invalidateQueries({
+                  queryKey: ["user-profile", currentUserId, currentUserId, targetRoomId],
+                });
+              } finally {
+                targetScope.roomNicknameInFlight = false;
+              }
+              break;
+            case "startdm":
+              if (targetScope.directMessageInFlight) {
+                setCommandFeedback(
+                  "A direct message is already opening. Try again after it finishes.",
+                );
+                return false;
+              }
+              targetScope.directMessageInFlight = true;
+              try {
+                if (!onNavigateToRoom) throw new Error("Room navigation unavailable");
+                const directRoomId = await startDirectMessage(args[0]);
+                if (!actionIsAllowed()) return false;
+                const controller = new AbortController();
+                navigationAbortRef.current = controller;
+                await onNavigateToRoom(directRoomId, controller.signal);
+              } finally {
+                targetScope.directMessageInFlight = false;
+              }
+              break;
             case "join":
               await joinRoom(args[0]);
               break;
@@ -199,15 +283,15 @@ export function useMessageSend({
               void queryClient.invalidateQueries({ queryKey: ["settings", "ignored-users"] });
               break;
           }
-          if (currentRoomIdRef.current === targetRoomId) setCommandFeedback(null);
+          if (scopeIsCurrent()) setCommandFeedback(null);
         } catch {
-          if (currentRoomIdRef.current === targetRoomId)
+          if (scopeIsCurrent())
             setCommandFeedback(
               `Could not complete /${command}. Check the arguments and your permissions, then try again.`,
             );
           return false;
         }
-        return currentRoomIdRef.current === targetRoomId;
+        return scopeIsCurrent();
       }
       if ("text" in parsed) {
         if (!composerParityEnabled) return false;
