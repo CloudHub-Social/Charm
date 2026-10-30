@@ -301,6 +301,34 @@ opaque ciphertext rather than interpreting or discarding records. R2/source clie
 allow one transport retry, with a five-second retry eligibility window; this is not
 an overall request deadline. Conditional headers remain intact and HTTP 412 is not
 retried by the transport. Interrupted copies resume only against identical bytes.
+Inventory rejection reports a fixed category for an unexpected object path,
+oversized object, total size or object count; it does not report object names,
+contents or metadata values. If multiple conditions apply, the first checked
+category is reported. Rejection occurs before the source inventory is copied.
+For a separately qualified inspection, setting
+`CHARM_WEB_SERVER_INVENTORY_INSPECT_ONLY=1` makes the process check the
+qualified source revision and list the session source, print one fixed
+category, and exit without opening the destination or starting the service.
+Any other value also stops startup. This mode does not read object bodies or
+alter the migration bounds; deploying it requires its own reviewed execution
+plan and does not establish that a subsequent cutover will pass.
+The archived-source controller also refuses to request a normal rollout if
+the installed state cutover revision differs from the proposed revision.
+The inspection dispatch is limited to PR #614's protected merge revision,
+requires an explicitly disabled provider autodeploy setting and an empty R2
+precheck, and uses the existing provider environments. It stops if the
+provider cannot identify the exact candidate revision; a stop request is not
+a guaranteed shutdown or billing cap. Review its execution plan and reconcile
+archive, secret bindings and the separate destination postcheck before retrying
+or performing a cutover.
+The handoff reports success only after capturing a conclusive inventory
+category and verifying that the retained app spec matches its original state.
+If the inspection flag, maintenance configuration or another setting remains
+changed after rollback, it stops for reconciliation without a second update.
+The dispatch validates main and both operator acknowledgments before any
+provider check. Its final outcome fails unless validation, precheck, inspection
+and destination postcheck all succeed; skipped or cancelled jobs are not
+successful inspection.
 
 For the ten-session planning scenario, doubling the estimated operations for that
 single retry remains below one million Class A and seven million Class B requests

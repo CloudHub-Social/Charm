@@ -30,13 +30,28 @@ async fn inventory(store: &dyn ObjectStore) -> Result<Vec<ObjectMeta>, String> {
         let valid = key.strip_prefix("sessions/").and_then(|s| s.strip_suffix(".json"))
             .is_some_and(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()));
         bytes = bytes.checked_add(meta.size).ok_or("state size overflow")?;
-        if !valid || meta.size > MAX_OBJECT_BYTES || bytes > MAX_TOTAL_BYTES || entries.len() >= MAX_OBJECTS {
-            return Err("state inventory exceeds approved copy bounds or schema".into());
+        // Fixed categories only: never log a path, object metadata or content.
+        if !valid {
+            return Err("state inventory rejected unexpected object path".into());
+        }
+        if meta.size > MAX_OBJECT_BYTES {
+            return Err("state inventory rejected oversized object".into());
+        }
+        if bytes > MAX_TOTAL_BYTES {
+            return Err("state inventory exceeds total size bound".into());
+        }
+        if entries.len() >= MAX_OBJECTS {
+            return Err("state inventory exceeds object count bound".into());
         }
         entries.push(meta);
     }
     entries.sort_by(|a, b| a.location.cmp(&b.location));
     Ok(entries)
+}
+
+/// Inspect source inventory only. No destination is accepted or accessed.
+pub async fn inspect_source(store: &dyn ObjectStore) -> Result<(), String> {
+    inventory(store).await.map(|_| ())
 }
 
 fn same_inventory(a: &[ObjectMeta], b: &[ObjectMeta]) -> bool {
@@ -173,7 +188,14 @@ mod tests {
             let path = Path::from(format!("sessions/{index:064x}.json"));
             source.put(&path, b"ciphertext".to_vec().into()).await.unwrap();
         }
-        assert!(migrate(&source, &crypto, &destination).await.is_err());
+        assert_eq!(
+            migrate(&source, &crypto, &destination).await.unwrap_err(),
+            "state inventory exceeds object count bound"
+        );
+        assert_eq!(
+            inspect_source(&source).await.unwrap_err(),
+            "state inventory exceeds object count bound"
+        );
         assert!(inventory(&destination).await.unwrap().is_empty());
         assert!(!completed(&destination).await.unwrap());
     }
@@ -182,7 +204,43 @@ mod tests {
     async fn rejects_unexpected_source_keys_before_copy() {
         let source = InMemory::new(); let crypto = InMemory::new(); let destination = InMemory::new();
         source.put(&Path::from("sessions/unexpected"), b"ciphertext".to_vec().into()).await.unwrap();
-        assert!(migrate(&source, &crypto, &destination).await.is_err());
+        assert_eq!(
+            migrate(&source, &crypto, &destination).await.unwrap_err(),
+            "state inventory rejected unexpected object path"
+        );
         assert!(read_optional(&destination, &Path::from(MARKER)).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_source_object_before_copy() {
+        let source = InMemory::new();
+        let crypto = InMemory::new();
+        let destination = InMemory::new();
+        let path = Path::from(format!("sessions/{}.json", "c".repeat(64)));
+        source.put(&path, vec![0; MAX_OBJECT_BYTES as usize + 1].into()).await.unwrap();
+        assert_eq!(
+            migrate(&source, &crypto, &destination).await.unwrap_err(),
+            "state inventory rejected oversized object"
+        );
+        assert_eq!(
+            inspect_source(&source).await.unwrap_err(),
+            "state inventory rejected oversized object"
+        );
+        assert!(inventory(&destination).await.unwrap().is_empty());
+        assert!(!completed(&destination).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn source_inspection_reports_fixed_categories() {
+        let source = InMemory::new();
+        assert!(inspect_source(&source).await.is_ok());
+        source
+            .put(&Path::from("sessions/unexpected"), b"synthetic".to_vec().into())
+            .await
+            .unwrap();
+        assert_eq!(
+            inspect_source(&source).await.unwrap_err(),
+            "state inventory rejected unexpected object path"
+        );
     }
 }

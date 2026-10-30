@@ -30,6 +30,21 @@ class CutoverTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             module.validate(app, None)
 
+    def test_archived_r2_cutover_must_match_proposed_revision(self):
+        for value in [None, "", "stale", "qualified"]:
+            app = self.valid()
+            env = [{"key": "CHARM_WEB_SERVER_STATE_BUCKET", "value": "charm-api-state-production"}]
+            if value is not None:
+                env.append({"key": "CHARM_WEB_SERVER_STATE_CUTOVER_SHA", "value": value})
+            app["spec"]["services"][0]["envs"] = env
+            if value == "qualified":
+                module.validate(app, [], "qualified")
+            else:
+                with self.assertRaises(ValueError):
+                    module.validate(app, [], "qualified")
+            with self.assertRaises(ValueError):
+                module.validate(app, [], None)
+
     def test_in_progress_deployment_rejected(self):
         app = self.valid()
         app["in_progress_deployment"] = {"id": "synthetic"}
