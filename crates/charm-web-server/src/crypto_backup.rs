@@ -237,6 +237,7 @@ impl ActiveWriterFence {
 pub struct CryptoBackupStore {
     key: Aes256Gcm,
     store: Arc<dyn ObjectStore>,
+    coordination: Option<Arc<dyn ObjectStore>>,
     writer_id: String,
     enforce_writer_fence: bool,
 }
@@ -269,9 +270,16 @@ impl Drop for TempDirGuard {
 }
 
 impl CryptoBackupStore {
+    fn coordination_store(&self) -> &dyn ObjectStore {
+        self.coordination.as_deref().unwrap_or(self.store.as_ref())
+    }
+
     pub async fn from_env() -> Result<Option<Self>, String> {
         let bucket = match std::env::var(BUCKET_ENV) {
             Ok(bucket) if !bucket.trim().is_empty() => bucket,
+            _ if crate::state_storage::configured() => {
+                return Err("R2 state requires the existing encrypted snapshot backend".into());
+            }
             _ => return Ok(None),
         };
         let key = load_backup_key().await?;
@@ -293,6 +301,7 @@ impl CryptoBackupStore {
         );
         Ok(Some(Self {
             key,
+            coordination: crate::state_storage::destination()?,
             store,
             writer_id: random_identifier(),
             enforce_writer_fence: true,
@@ -397,6 +406,7 @@ impl CryptoBackupStore {
         Self {
             key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes)),
             store: Arc::new(object_store::memory::InMemory::new()),
+            coordination: None,
             writer_id: "test-writer".to_string(),
             enforce_writer_fence: false,
         }
@@ -412,6 +422,7 @@ impl CryptoBackupStore {
         Self {
             key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes)),
             store,
+            coordination: None,
             writer_id: writer_id.to_string(),
             enforce_writer_fence,
         }
@@ -534,7 +545,7 @@ impl CryptoBackupStore {
         if !self.enforce_writer_fence {
             return Ok(None);
         }
-        let result = match self.store.get(&ObjectPath::from(ACTIVE_WRITER_PATH)).await {
+        let result = match self.coordination_store().get(&ObjectPath::from(ACTIVE_WRITER_PATH)).await {
             Ok(result) => result,
             Err(object_store::Error::NotFound { .. }) => return Ok(None),
             Err(error) => {
@@ -600,7 +611,7 @@ impl CryptoBackupStore {
             ..Default::default()
         };
         match self
-            .store
+            .coordination_store()
             .put_opts(
                 &ObjectPath::from(ACTIVE_WRITER_PATH),
                 PutPayload::from(payload),
@@ -1330,6 +1341,42 @@ mod tests {
         )
         .is_ok());
         assert!(validate_manifest_files(&[], &DATABASE_FILES).is_err());
+    }
+
+    #[tokio::test]
+    async fn r2_state_cannot_disable_snapshot_protection() {
+        let _guard = crate::ENV_TEST_LOCK.lock().await;
+        let state_name = "CHARM_WEB_SERVER_STATE_BUCKET";
+        let old_state = std::env::var_os(state_name);
+        let old_crypto = std::env::var_os(BUCKET_ENV);
+        std::env::set_var(state_name, "charm-api-state-production");
+        std::env::remove_var(BUCKET_ENV);
+        let result = CryptoBackupStore::from_env().await;
+        for (name, old) in [(state_name, old_state), (BUCKET_ENV, old_crypto)] {
+            match old {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn split_state_fences_only_in_coordination_store() {
+        let snapshots: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let coordination: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let mut writer = CryptoBackupStore::new_for_test_with_store(
+            [43; 32], "r2-writer", Arc::clone(&snapshots), true,
+        );
+        writer.coordination = Some(Arc::clone(&coordination));
+        writer.activate_writer().await.unwrap();
+        writer.commit_writer().await.unwrap();
+        writer.acquire_recovery_mutation("request").await.unwrap();
+        writer.renew_recovery_mutation("request").await.unwrap();
+        writer.release_recovery_mutation("request").await.unwrap();
+        assert!(coordination.head(&ObjectPath::from(ACTIVE_WRITER_PATH)).await.is_ok());
+        assert!(matches!(snapshots.head(&ObjectPath::from(ACTIVE_WRITER_PATH)).await,
+            Err(object_store::Error::NotFound { .. })));
     }
 
     #[tokio::test]

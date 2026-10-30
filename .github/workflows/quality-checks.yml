@@ -91,6 +91,7 @@ jobs:
         run: |
           python3 -m pip install --quiet pyyaml
           python3 -m unittest discover -s scripts -p 'test_merge_do_app_spec.py'
+          python3 -m unittest discover -s scripts -p 'test_state_cutover.py'
 
       - id: frontend_install
         run: pnpm install --frozen-lockfile
