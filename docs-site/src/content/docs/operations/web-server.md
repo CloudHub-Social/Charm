@@ -271,3 +271,99 @@ by this proposal. Transition downtime remains unknown.
 Provider references: [source update and wait semantics](https://docs.digitalocean.com/reference/doctl/reference/apps/update/),
 [build commit binding](https://docs.digitalocean.com/products/app-platform/how-to/use-environment-variables/),
 and [rollback behavior](https://docs.digitalocean.com/products/app-platform/how-to/manage-deployments/).
+
+## R2 state repair (qualification pending)
+
+The proposed production authority is private R2 bucket
+`charm-api-state-production`. It holds the complete encrypted `sessions/`
+namespace and `control/active-writer`. Crypto database generations and manifests
+remain in the original Spaces crypto bucket. This is encrypted secret-bearing
+session data, not metadata-only. Encryption keys remain in their existing stores.
+
+Configure the complete `CHARM_WEB_SERVER_STATE_` group: `BUCKET`, `ENDPOINT`,
+`REGION` (`auto`), `ACCESS_KEY_ID`, `SECRET_ACCESS_KEY`, and `CUTOVER_SHA`.
+Credentials must be installed directly as encrypted runtime secrets. Never put
+values in repository files, chat, command arguments or logs. Partial configuration
+fails closed. Before the first copy, the source revision must equal `CUTOVER_SHA`. Completed
+migrations consult the destination receipt before requiring old source credentials
+or the initial cutover attestation. Later releases retain R2 authority.
+
+Before the single cutover, verify the app is archived with zero instances and no
+pending rollout. Preserve source session and crypto bindings. The qualified binary
+copies opaque session ciphertext and the writer fence before starting any listener,
+sweeper or writer. It preserves exact object paths (required by authenticated
+encryption), verifies bytes, and rechecks the source inventory. Source objects are
+never deleted or rewritten. Conflicting destination bytes halt migration. Copies
+are bounded to ten sessions (the budget-estimate population), 1 MiB/object and 64 MiB total session data. Exceeding
+these bounds requires a separately reviewed sizing decision; do not raise them
+silently. The limit includes expired records and tombstones: migration preserves
+opaque ciphertext rather than interpreting or discarding records. R2/source clients
+allow one transport retry, with a five-second retry eligibility window; this is not
+an overall request deadline. Conditional headers remain intact and HTTP 412 is not
+retried by the transport. Interrupted copies resume only against identical bytes.
+Inventory rejection reports a fixed category for an unexpected object path,
+oversized object, total size or object count; it does not report object names,
+contents or metadata values. If multiple conditions apply, the first checked
+category is reported. Rejection occurs before the source inventory is copied.
+For a separately qualified inspection, setting
+`CHARM_WEB_SERVER_INVENTORY_INSPECT_ONLY=1` makes the process check the
+qualified source revision and list the session source, print one fixed
+category, and exit without opening the destination or starting the service.
+Any other value also stops startup. This mode does not read object bodies or
+alter the migration bounds; deploying it requires its own reviewed execution
+plan and does not establish that a subsequent cutover will pass.
+The archived-source controller also refuses to request a normal rollout if
+the installed state cutover revision differs from the proposed revision.
+The inspection dispatch is limited to PR #614's protected merge revision,
+requires an explicitly disabled provider autodeploy setting and an empty R2
+precheck, and uses the existing provider environments. It stops if the
+provider cannot identify the exact candidate revision; a stop request is not
+a guaranteed shutdown or billing cap. Review its execution plan and reconcile
+archive, secret bindings and the separate destination postcheck before retrying
+or performing a cutover.
+The handoff reports success only after capturing a conclusive inventory
+category and verifying that the retained app spec matches its original state.
+If the inspection flag, maintenance configuration or another setting remains
+changed after rollback, it stops for reconciliation without a second update.
+The dispatch validates main and both operator acknowledgments before any
+provider check. Its final outcome fails unless validation, precheck, inspection
+and destination postcheck all succeed; skipped or cancelled jobs are not
+successful inspection.
+
+For the ten-session planning scenario, doubling the estimated operations for that
+single retry remains below one million Class A and seven million Class B requests
+per month. At Standard pricing, rounding to those billing units and one GB-month
+costs approximately USD7.035 without assuming free-tier availability. This is a
+traffic estimate, not a billing cap; unplanned traffic still requires reassessment.
+
+The completion receipt is written only after verification. Subsequent starts read
+that receipt and never reimport original session records, including records deleted
+by logout after cutover. R2 is authoritative thereafter. Failure means stop/archive
+and fix forward using the same R2 state, not boot an old Spaces-backed binary.
+
+Provisioning, credential delivery, migration, source-size measurement and live
+acceptance have not yet occurred. USD10/month is an authorized planning budget,
+not a provider-enforced cap. One instance and bounded retries do not bound repeated
+requests or monthly usage. Record private aggregate source counts/bytes and expected
+session traffic before provisioning; halt if the estimate exceeds the budget.
+Use existing provider usage reporting during acceptance; do not add a new monitor.
+Required hosted tests and review must pass before production setup. Acceptance
+includes source/destination integrity, activation/commit, session restoration,
+durable token/cookie updates and restart without stale-state resurrection.
+
+The release controller runs `scripts/verify-state-cutover.py` before an initial
+cutover update. The same read-only gate is mandatory immediately before the
+secure credential-install update; its receipt must show archived active spec,
+zero instances, no pending rollout and unchanged single-instance capacity.
+The release workflow runs this gate before every update, regardless of the
+cutover SHA. It permits the guarded same-revision restart described below; a
+different live revision remains blocked until a receipt-backed release
+controller has been implemented and qualified.
+
+The automatic release workflow refuses an update until the approved state bucket
+binding is present. This lets the protected merge complete without accidentally
+launching an additional legacy-backend deployment. The single secure binding update
+must apply the qualified merged source and pass the same controller gate; do not
+install bindings early or follow that update with a duplicate workflow dispatch.
+After migration, same-revision restart requires provider-reported actual source
+identity, matching guarded configuration and no additional background components.

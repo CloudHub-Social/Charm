@@ -1,0 +1,135 @@
+# REVIEW DRAFT ONLY: install on protected main in same merge as deploy hold.
+name: Charm state inventory inspection
+on:
+  workflow_dispatch:
+    inputs:
+      sole_writer_coordinated:
+        description: "Confirm the sole-writer interval is coordinated"
+        type: boolean
+        required: true
+      budget_headroom_verified:
+        description: "Confirm the approved budget headroom was verified"
+        type: boolean
+        required: true
+      allow_archived_retained_spec:
+        description: "Allow temporary unarchive of an archived retained spec"
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: Web server deploy (companion API)
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    env:
+      TARGET_REF: ${{ github.ref }}
+      SOLE_WRITER: ${{ inputs.sole_writer_coordinated }}
+      BUDGET_HEADROOM: ${{ inputs.budget_headroom_verified }}
+    steps:
+      - name: Require main and operator acknowledgments
+        run: |
+          if [ "$TARGET_REF" != refs/heads/main ] || [ "$SOLE_WRITER" != true ] || [ "$BUDGET_HEADROOM" != true ]; then
+            echo 'Inspection requires main and both operator acknowledgments.'
+            exit 1
+          fi
+  r2_precheck:
+    needs: validate
+    if: github.ref == 'refs/heads/main' && inputs.sole_writer_coordinated && inputs.budget_headroom_verified
+    runs-on: ubuntu-latest
+    environment: cloudflare-preview
+    outputs:
+      empty: ${{ steps.check.outputs.empty }}
+    steps:
+      - id: check
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          token = os.environ.get('CLOUDFLARE_API_TOKEN')
+          if not token:
+              raise SystemExit('Existing Cloudflare binding unavailable')
+          url = 'https://api.cloudflare.com/client/v4/accounts/bb346e009981b1b928a5b8e008f7021d/r2/buckets/charm-api-state-production/objects?per_page=1'
+          req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + token})
+          try:
+              with urllib.request.urlopen(req, timeout=15) as response:
+                  result = json.load(response)
+              info = result.get('result_info')
+              if (result.get('success') is not True or result.get('result') != []
+                      or (info is not None and (not isinstance(info, dict)
+                          or info.get('is_truncated') is not False or info.get('cursor')))):
+                  raise ValueError()
+          except Exception:
+              raise SystemExit('Destination empty state not established')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write('empty=empty\n')
+          print('Destination is empty')
+          PY
+  inspection_outcome:
+    needs: [validate, r2_precheck, inspect, r2_postcheck]
+    if: always()
+    runs-on: ubuntu-latest
+    env:
+      VALIDATE_RESULT: ${{ needs.validate.result }}
+      PRECHECK_RESULT: ${{ needs.r2_precheck.result }}
+      INSPECT_RESULT: ${{ needs.inspect.result }}
+      POSTCHECK_RESULT: ${{ needs.r2_postcheck.result }}
+    steps:
+      - name: Require completed inspection and destination checks
+        run: |
+          if [ "$VALIDATE_RESULT" != success ] || [ "$PRECHECK_RESULT" != success ] || [ "$INSPECT_RESULT" != success ] || [ "$POSTCHECK_RESULT" != success ]; then
+            echo 'Inspection incomplete: validation, precheck, inspection and postcheck must all succeed.'
+            exit 1
+          fi
+          echo 'Inspection and destination checks completed.'
+  inspect:
+    needs: r2_precheck
+    if: github.ref == 'refs/heads/main' && inputs.sole_writer_coordinated && inputs.budget_headroom_verified && needs.r2_precheck.outputs.empty == 'empty'
+    runs-on: ubuntu-latest
+    environment: digitalocean-production
+    timeout-minutes: 40
+    env:
+      DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+      CHARM_R2_PREFLIGHT: ${{ needs.r2_precheck.outputs.empty }}
+      CHARM_BUDGET_HEADROOM: confirmed
+      CHARM_ALLOW_ARCHIVED_RETAINED_SPEC: ${{ inputs.allow_archived_retained_spec }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: digitalocean/action-doctl@3cb3953159719656269e044e0e24ca16dd2a690f
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+      - name: One bounded inventory inspection
+        run: python3 scripts/charm-inspect-handoff.py "$GITHUB_SHA" --execute --coordinated-sole-writer
+  r2_postcheck:
+    needs: [r2_precheck, inspect]
+    if: always() && github.ref == 'refs/heads/main' && needs.r2_precheck.outputs.empty == 'empty'
+    runs-on: ubuntu-latest
+    environment: cloudflare-preview
+    steps:
+      - name: Verify destination remains empty
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          token = os.environ.get('CLOUDFLARE_API_TOKEN')
+          if not token:
+              raise SystemExit('Existing Cloudflare binding unavailable')
+          url = 'https://api.cloudflare.com/client/v4/accounts/bb346e009981b1b928a5b8e008f7021d/r2/buckets/charm-api-state-production/objects?per_page=1'
+          req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + token})
+          try:
+              with urllib.request.urlopen(req, timeout=15) as response:
+                  result = json.load(response)
+              info = result.get('result_info')
+              if (result.get('success') is not True or result.get('result') != []
+                      or (info is not None and (not isinstance(info, dict)
+                          or info.get('is_truncated') is not False or info.get('cursor')))):
+                  raise ValueError()
+          except Exception:
+              raise SystemExit('Destination empty state not established')
+          print('Destination is empty')
+          PY

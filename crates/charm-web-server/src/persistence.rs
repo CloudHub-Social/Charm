@@ -397,7 +397,8 @@ impl PersistenceStore {
                      clearly intended. Set {MASTER_KEY_ENV} too."
                 ));
             }
-            (Err(_), Err(_)) => return Ok(None),
+            (Err(_), Err(_)) if !crate::state_storage::configured() => return Ok(None),
+            (Err(_), Err(_)) => return Err("R2 state requires the existing session master key".into()),
             (Ok(key_b64), _) => key_b64,
         };
         let key_bytes = BASE64
@@ -412,7 +413,9 @@ impl PersistenceStore {
         let key = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes));
 
         let (store, durable_session_backend): (Arc<dyn ObjectStore>, bool) =
-            if let Ok(bucket) = spaces_bucket {
+            if let Some(state) = crate::state_storage::destination()? {
+                (state, true)
+            } else if let Ok(bucket) = spaces_bucket {
                 (Arc::new(spaces_store_from_env(&bucket)?), true)
             } else {
                 let dir = std::env::var(DATA_DIR_ENV).unwrap_or_else(|_| "./data".to_string());
@@ -517,7 +520,7 @@ impl PersistenceStore {
             .await
         {
             Ok(_) => Ok(()),
-            Err(object_store::Error::NotImplemented { .. }) => {
+            Err(object_store::Error::NotImplemented { .. }) if !self.durable_session_backend => {
                 // LocalFileSystem, used for local development and these
                 // single-process tests, has no conditional writes. The
                 // per-token lock still preserves its in-process ordering.
@@ -1851,7 +1854,7 @@ impl PersistenceStore {
                     }
                     continue;
                 }
-                Err(object_store::Error::NotImplemented { .. }) => {
+                Err(object_store::Error::NotImplemented { .. }) if !self.durable_session_backend => {
                     // The read above already confirmed the object exists,
                     // so an unconditional overwrite here is a same-object
                     // update, not a resurrection — safe even without
@@ -1998,11 +2001,9 @@ impl PersistenceStore {
     /// its now-invalid tokens — logged and treated as a no-op, the same
     /// outcome as if this call had lost the race to acquire the in-process
     /// lock in the first place. Falls back to a plain unconditional `put`
-    /// only when the backend reports `NotImplemented` for conditional
-    /// writes (`LocalFileSystem`, used for local dev and every test in this
-    /// module — DO Spaces, the only backend this crate actually deploys
-    /// with multiple instances against, does support it), preserving
-    /// today's in-process-only protection there rather than failing outright.
+    /// only for an explicitly local backend reporting `NotImplemented`.
+    /// Production object storage fails closed: S3 compatibility alone does not
+    /// establish atomic conditional-write support.
     ///
     /// `Ok(TouchOutcome::NotFound)`, not an error, if the entry was removed
     /// by a racing logout before this could even acquire the lock or read
@@ -2087,7 +2088,7 @@ impl PersistenceStore {
                             .to_string(),
                     );
                 }
-                Err(object_store::Error::NotImplemented { .. }) => {
+                Err(object_store::Error::NotImplemented { .. }) if !self.durable_session_backend => {
                     return self
                         .store
                         .put(&path, PutPayload::from(json))
@@ -2804,6 +2805,55 @@ mod tests {
         path
     }
 
+    // Durable recovery fixtures need actual CAS semantics. LocalFileSystem
+    // deliberately reports NotImplemented for updates and is not a durable
+    // backend substitute, even when a fixture flips the admission flag.
+    fn conditional_store(key_bytes: [u8; 32]) -> PersistenceStore {
+        PersistenceStore {
+            key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes)),
+            store: Arc::new(object_store::memory::InMemory::new()),
+            crypto_backup: None,
+            durable_session_backend: true,
+            token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+
+    #[tokio::test]
+    async fn durable_backend_never_overwrites_when_conditional_update_is_unsupported() {
+        let dir = scratch_dir("durable-no-unconditional-fallback");
+        let mut store = PersistenceStore::new_for_test(&dir, [77u8; 32]);
+        store.durable_session_backend = true;
+        let path = ObjectPath::from("sessions/conditional-test.json");
+        store
+            .store
+            .put(&path, b"original".to_vec().into())
+            .await
+            .unwrap();
+        let original = store.store.get(&path).await.unwrap();
+        let version = object_store::UpdateVersion {
+            e_tag: original.meta.e_tag.clone(),
+            version: original.meta.version.clone(),
+        };
+        assert!(matches!(
+            store
+                .update_existing_object(&path, b"replacement".to_vec(), version)
+                .await,
+            Err(object_store::Error::NotImplemented { .. })
+        ));
+        assert_eq!(
+            store
+                .store
+                .get(&path)
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap()
+                .as_ref(),
+            b"original"
+        );
+    }
+
     fn dummy_session(mxid: &str) -> MatrixSession {
         MatrixSession {
             meta: SessionMeta {
@@ -2920,9 +2970,7 @@ mod tests {
 
     #[tokio::test]
     async fn conditional_seed_cleanup_refuses_a_live_setup_claim() {
-        let dir = scratch_dir("conditional-recovery-cleanup");
-        let mut store = PersistenceStore::new_for_test(&dir, [75u8; 32]);
-        store.durable_session_backend = true;
+        let store = conditional_store([75u8; 32]);
         let session = dummy_session("@conditional:example.invalid");
         let pending = serde_json::from_value(serde_json::json!({
             "passphrase": "protected seed",
@@ -2963,9 +3011,7 @@ mod tests {
 
     #[tokio::test]
     async fn expired_recovery_claim_allows_conditional_seed_cleanup() {
-        let dir = scratch_dir("expired-conditional-recovery-cleanup");
-        let mut store = PersistenceStore::new_for_test(&dir, [76u8; 32]);
-        store.durable_session_backend = true;
+        let store = conditional_store([76u8; 32]);
         let pending = serde_json::from_value(serde_json::json!({
             "passphrase": "protected seed",
             "recovery_key": null,
@@ -4684,9 +4730,7 @@ mod tests {
     /// available even when its ordinary activity timestamp is stale.
     #[tokio::test]
     async fn sweep_expired_preserves_a_stale_session_with_pending_recovery_custody() {
-        let dir = scratch_dir("sweep-expired-pending-recovery");
-        let mut store = PersistenceStore::new_for_test(&dir, [55u8; 32]);
-        store.durable_session_backend = true;
+        let store = conditional_store([55u8; 32]);
         let now = now_unix();
         let sixty_days = 60 * 24 * 60 * 60;
         save_with_last_seen(
@@ -4765,9 +4809,7 @@ mod tests {
             .mount()
             .await;
 
-        let dir = scratch_dir("sweep-expired-stale-issued-recovery");
-        let mut store = PersistenceStore::new_for_test(&dir, [56u8; 32]);
-        store.durable_session_backend = true;
+        let store = conditional_store([56u8; 32]);
         let sixty_days = 60 * 24 * 60 * 60;
         save_with_last_seen(
             &store,
