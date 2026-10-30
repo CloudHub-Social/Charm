@@ -11,36 +11,103 @@ use charm_web_server::{observability, persistence::PersistenceStore, routes, syn
 const SPACE_HIERARCHY_REORGANIZATION_ENV: &str = "CHARM_FEATURE_SPACE_HIERARCHY_REORGANIZATION";
 const UX_REFRESH_V1_ENV: &str = "CHARM_FEATURE_UX_REFRESH_V1";
 
+async fn inspect_and_exit(
+    mode: std::ffi::OsString,
+    inspection: impl std::future::Future<Output = Result<(), String>>,
+) -> ! {
+    let category = if mode == "1"
+        && charm_web_server::release_guard::check_environment().is_ok()
+    {
+        match inspection.await {
+            Ok(()) => "state inventory within bounds",
+            Err(error) => match error.as_str() {
+                "state inventory rejected unexpected object path" => {
+                    "state inventory rejected unexpected object path"
+                }
+                "state inventory rejected oversized object" => {
+                    "state inventory rejected oversized object"
+                }
+                "state inventory exceeds total size bound" => {
+                    "state inventory exceeds total size bound"
+                }
+                "state inventory exceeds object count bound" => {
+                    "state inventory exceeds object count bound"
+                }
+                _ => "state inventory inspection unavailable",
+            },
+        }
+    } else {
+        "state inventory inspection unavailable"
+    };
+    eprintln!("{category}");
+    std::process::exit(1);
+}
+
+#[cfg(test)]
+mod inspection_process_tests {
+    use object_store::local::LocalFileSystem;
+    use std::process::Command;
+
+    #[tokio::test]
+    async fn inventory_outcomes_exit_in_subprocess() {
+        const CASE: &str = "CHARM_TEST_INSPECTION_CASE";
+        if std::env::var(CASE).is_ok() {
+            let source = LocalFileSystem::new_with_prefix(
+                std::env::var("CHARM_TEST_SOURCE").unwrap(),
+            )
+            .unwrap();
+            super::inspect_and_exit(
+                "1".into(),
+                charm_web_server::state_migration::inspect_source(&source),
+            )
+            .await;
+        }
+
+        for (case, expected) in [
+            ("passing", "state inventory within bounds\n"),
+            ("rejected", "state inventory rejected unexpected object path\n"),
+        ] {
+            let root = std::env::temp_dir()
+                .join(format!("charm-inspect-{}-{case}", std::process::id()));
+            let source = root.join("source");
+            let sessions = source.join("sessions");
+            std::fs::create_dir_all(&sessions).unwrap();
+            let source_file = sessions.join(if case == "rejected" {
+                "unexpected"
+            } else {
+                "0000000000000000000000000000000000000000000000000000000000000000.json"
+            });
+            std::fs::write(&source_file, b"fixture").unwrap();
+            let destination_file = root.join("destination-sentinel");
+            std::fs::write(&destination_file, b"unchanged").unwrap();
+            let output = Command::new(std::env::current_exe().unwrap())
+                .env_clear()
+                .env(CASE, case)
+                .env("CHARM_TEST_SOURCE", &source)
+                .args([
+                    "--exact",
+                    "inspection_process_tests::inventory_outcomes_exit_in_subprocess",
+                    "--nocapture",
+                ])
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(1));
+            assert_eq!(output.stderr, expected.as_bytes());
+            assert_eq!(std::fs::read(&source_file).unwrap(), b"fixture");
+            assert_eq!(std::fs::read_dir(&sessions).unwrap().count(), 1);
+            assert_eq!(std::fs::read(&destination_file).unwrap(), b"unchanged");
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Presence always blocks normal startup, including a misspelled value.
     // Inspection reads only source metadata and exits on both outcomes before
     // destination access, migration, telemetry, background tasks or listener.
     if let Some(mode) = std::env::var_os("CHARM_WEB_SERVER_INVENTORY_INSPECT_ONLY") {
-        let category = if mode == "1"
-            && charm_web_server::release_guard::check_environment().is_ok()
-        {
-            match charm_web_server::state_storage::inspect_source().await {
-                Ok(()) => "state inventory within bounds",
-                Err(error) => match error.as_str() {
-                    "state inventory rejected unexpected object path" => {
-                        "state inventory rejected unexpected object path"
-                    }
-                    "state inventory rejected oversized object" => {
-                        "state inventory rejected oversized object"
-                    }
-                    "state inventory exceeds total size bound" => "state inventory exceeds total size bound",
-                    "state inventory exceeds object count bound" => {
-                        "state inventory exceeds object count bound"
-                    }
-                    _ => "state inventory inspection unavailable",
-                },
-            }
-        } else {
-            "state inventory inspection unavailable"
-        };
-        eprintln!("{category}");
-        std::process::exit(1);
+        inspect_and_exit(mode, charm_web_server::state_storage::inspect_source()).await;
     }
 
     // Fail before telemetry, credentials, storage or background tasks initialize.
