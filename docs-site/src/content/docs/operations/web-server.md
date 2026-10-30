@@ -301,6 +301,10 @@ opaque ciphertext rather than interpreting or discarding records. R2/source clie
 allow one transport retry, with a five-second retry eligibility window; this is not
 an overall request deadline. Conditional headers remain intact and HTTP 412 is not
 retried by the transport. Interrupted copies resume only against identical bytes.
+Inventory rejection reports a fixed category for an unexpected object path,
+oversized object, total size or object count; it does not report object names,
+contents or metadata values. If multiple conditions apply, the first checked
+category is reported. Rejection occurs before the source inventory is copied.
 
 For the ten-session planning scenario, doubling the estimated operations for that
 single retry remains below one million Class A and seven million Class B requests
