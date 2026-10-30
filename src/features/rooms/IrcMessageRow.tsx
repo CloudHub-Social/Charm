@@ -1,11 +1,11 @@
-import { messageActionSurfaceClassName, useMessageActionTouch } from "./messageActionSurface";
+import { useMessageActionTouch } from "./messageActionSurface";
 import { cn } from "@/lib/utils";
 import { useDisplayFormats } from "@/features/appearance/useDisplayFormats";
 import { useMessageSpacing } from "@/features/appearance/messageSpacing";
 import { LinkPreviewForMessage } from "./linkPreview/LinkPreviewForMessage";
 import { MediaMessage } from "./media/MediaMessage";
 import { nickColor } from "./roomDisplay";
-import { MessageActions } from "./MessageActions";
+import { MessageRowActions } from "./MessageRowActions";
 import { ReactionBar } from "./ReactionBar";
 import { RichMessageContent, UndecryptedMessage } from "./RichMessageContent";
 import { formatTime, type MessageRowLayoutProps } from "./messageRowShared";
@@ -18,46 +18,24 @@ import { formatTime, type MessageRowLayoutProps } from "./messageRowShared";
  * the other two modes). No avatars, no bubble, no left/right split — own
  * messages are distinguished only by nick color, same as any other sender,
  * matching real IRC where you don't get special treatment. */
-export function IrcMessageRow({
-  message,
-  roomId,
-  currentUserId,
-  own,
-  canRedact,
-  canPin,
-  isPinned,
-  isNew,
-  getActionsHandle,
-  registerActionsRef,
-  onReply,
-  onReact,
-  onEdit,
-  onDelete,
-  onPin,
-  onUnpin,
-  onCopy,
-  onCopyLink,
-  onBookmark,
-  onUnbookmark,
-  isBookmarked,
-  onResend,
-  onDiscard,
-  onJumpToMessage,
-  onSenderClick,
-  onUserPillClick,
-  onRoomPillClick,
-  isPending,
-  isError,
-  disableRelationActions,
-  disableStableEventActions,
-  mutationsDisabled = false,
-  isUndecrypted,
-  rowKey,
-  onForward,
-  onViewSource,
-  onReport,
-  onViewEditHistory,
-}: MessageRowLayoutProps) {
+export function IrcMessageRow(props: MessageRowLayoutProps) {
+  const {
+    message,
+    roomId,
+    currentUserId,
+    isNew,
+    getActionsHandle,
+    onReact,
+    onJumpToMessage,
+    onSenderClick,
+    onUserPillClick,
+    onRoomPillClick,
+    isPending,
+    isError,
+    disableRelationActions,
+    isUndecrypted,
+    rowKey,
+  } = props;
   const nick = message.sender_display_name ?? message.sender;
   const { clockFormat } = useDisplayFormats();
   const spacingStyle = useMessageSpacing();
@@ -175,43 +153,7 @@ export function IrcMessageRow({
           eventId={message.event_id}
         />
       )}
-      {(!message.redacted || (!own && onReport)) && (
-        <MessageActions
-          ref={(el) => registerActionsRef(rowKey, el)}
-          accountId={currentUserId ?? ""}
-          isOwn={own}
-          canEdit={own && !message.poll && message.text_editable === true && message.media === null}
-          canReply={!message.poll}
-          canRedact={canRedact}
-          canPin={canPin}
-          isPinned={isPinned}
-          disableRelationActions={disableRelationActions}
-          disableStableEventActions={disableStableEventActions}
-          mutationsDisabled={mutationsDisabled}
-          isUndecrypted={isUndecrypted}
-          isError={isError}
-          className={messageActionSurfaceClassName}
-          onReply={onReply}
-          onReact={onReact}
-          onEdit={onEdit}
-          onDelete={onDelete}
-          onPin={onPin}
-          onUnpin={onUnpin}
-          onCopy={onCopy}
-          onCopyLink={onCopyLink}
-          onBookmark={onBookmark}
-          onUnbookmark={onUnbookmark}
-          isBookmarked={isBookmarked}
-          onResend={onResend}
-          onDiscard={onDiscard}
-          onForward={message.poll ? undefined : onForward}
-          onViewSource={onViewSource}
-          onReport={onReport}
-          isRedacted={message.redacted}
-          isEdited={message.edited}
-          onViewEditHistory={onViewEditHistory}
-        />
-      )}
+      <MessageRowActions {...props} />
     </div>
   );
 }

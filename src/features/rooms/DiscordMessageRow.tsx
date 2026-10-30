@@ -1,4 +1,4 @@
-import { messageActionSurfaceClassName, useMessageActionTouch } from "./messageActionSurface";
+import { useMessageActionTouch } from "./messageActionSurface";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useDisplayFormats } from "@/features/appearance/useDisplayFormats";
 import { useMessageSpacing } from "@/features/appearance/messageSpacing";
@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import { LinkPreviewForMessage } from "./linkPreview/LinkPreviewForMessage";
 import { MediaMessage } from "./media/MediaMessage";
 import { avatarColor, initials, resolveAvatar } from "./roomDisplay";
-import { MessageActions } from "./MessageActions";
+import { MessageRowActions } from "./MessageRowActions";
 import { ReactionBar } from "./ReactionBar";
 import { ReplyPreview } from "./ReplyPreview";
 import { RichMessageContent, UndecryptedMessage } from "./RichMessageContent";
@@ -20,49 +20,27 @@ import { formatTime, type MessageRowLayoutProps } from "./messageRowShared";
  * never shows the current user's avatar at all). Follow-up rows in the same
  * run drop the header and reveal a small timestamp on hover, left-padded to
  * align under the first message's body. */
-export function DiscordMessageRow({
-  message,
-  roomId,
-  currentUserId,
-  own,
-  sameSenderAsPrev,
-  canRedact,
-  canPin,
-  isPinned,
-  readers,
-  senderNameByUserId,
-  isNew,
-  getActionsHandle,
-  registerActionsRef,
-  onReply,
-  onReact,
-  onEdit,
-  onDelete,
-  onPin,
-  onUnpin,
-  onCopy,
-  onCopyLink,
-  onBookmark,
-  onUnbookmark,
-  isBookmarked,
-  onResend,
-  onDiscard,
-  onJumpToMessage,
-  onSenderClick,
-  onUserPillClick,
-  onRoomPillClick,
-  isPending,
-  isError,
-  disableRelationActions,
-  disableStableEventActions,
-  mutationsDisabled = false,
-  isUndecrypted,
-  rowKey,
-  onForward,
-  onViewSource,
-  onReport,
-  onViewEditHistory,
-}: MessageRowLayoutProps) {
+export function DiscordMessageRow(props: MessageRowLayoutProps) {
+  const {
+    message,
+    roomId,
+    currentUserId,
+    sameSenderAsPrev,
+    readers,
+    senderNameByUserId,
+    isNew,
+    getActionsHandle,
+    onReact,
+    onJumpToMessage,
+    onSenderClick,
+    onUserPillClick,
+    onRoomPillClick,
+    isPending,
+    isError,
+    disableRelationActions,
+    isUndecrypted,
+    rowKey,
+  } = props;
   const showHeader = !sameSenderAsPrev;
   const { clockFormat } = useDisplayFormats();
   const spacingStyle = useMessageSpacing();
@@ -190,45 +168,7 @@ export function DiscordMessageRow({
               )}
             />
           )}
-          {(!message.redacted || (!own && onReport)) && (
-            <MessageActions
-              ref={(el) => registerActionsRef(rowKey, el)}
-              accountId={currentUserId ?? ""}
-              isOwn={own}
-              canEdit={
-                own && !message.poll && message.text_editable === true && message.media === null
-              }
-              canReply={!message.poll}
-              canRedact={canRedact}
-              canPin={canPin}
-              isPinned={isPinned}
-              disableRelationActions={disableRelationActions}
-              disableStableEventActions={disableStableEventActions}
-              mutationsDisabled={mutationsDisabled}
-              isUndecrypted={isUndecrypted}
-              isError={isError}
-              className={messageActionSurfaceClassName}
-              onReply={onReply}
-              onReact={onReact}
-              onEdit={onEdit}
-              onDelete={onDelete}
-              onPin={onPin}
-              onUnpin={onUnpin}
-              onCopy={onCopy}
-              onCopyLink={onCopyLink}
-              onBookmark={onBookmark}
-              onUnbookmark={onUnbookmark}
-              isBookmarked={isBookmarked}
-              onResend={onResend}
-              onDiscard={onDiscard}
-              onForward={message.poll ? undefined : onForward}
-              onViewSource={onViewSource}
-              onReport={onReport}
-              isRedacted={message.redacted}
-              isEdited={message.edited}
-              onViewEditHistory={onViewEditHistory}
-            />
-          )}
+          <MessageRowActions {...props} />
         </div>
         {!message.redacted && !message.media && !isUndecrypted && (
           <LinkPreviewForMessage

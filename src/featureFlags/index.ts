@@ -248,14 +248,29 @@ export function setFeatureFlagOverride(key: FeatureFlagKey, value: boolean): Pro
   return setFeatureFlagOverrideInner(key, value);
 }
 
+/** Developer-only bundles. Appearance preferences and specialist flags are independent. */
+export function setUxFeatureBundle(bundle: "legacy" | "refreshed"): Promise<void> {
+  if (!initialized) return Promise.reject(new Error("Feature flags are not initialized"));
+  const enabled = bundle === "refreshed";
+  return setFeatureFlagOverridesInner({
+    ux_refresh_v1: enabled,
+    message_action_parity: enabled,
+    composer_parity: enabled,
+  });
+}
+
 async function setFeatureFlagOverrideInner(key: FeatureFlagKey, value: boolean): Promise<void> {
+  return setFeatureFlagOverridesInner({ [key]: value });
+}
+
+async function setFeatureFlagOverridesInner(changes: FeatureFlagOverrides): Promise<void> {
   const mutationId = ++cacheMutationId;
   const searchWasEnabled = resolveFlag(
     "encrypted_local_message_search",
     persistedOverridesCache,
     remoteCache,
   );
-  const next = { ...overridesCache, [key]: value };
+  const next = { ...overridesCache, ...changes };
   overridesCache = next;
   emit();
   try {

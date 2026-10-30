@@ -393,3 +393,87 @@ describe("feature-flag client", () => {
     expect(settled.result.current).toBe(true);
   });
 });
+
+describe("supported UX bundles", () => {
+  it("preserves saved overrides when a bundle is requested during delayed initialization", async () => {
+    mocks.isTauri.mockReturnValue(true);
+    let releaseLoad: ((store: unknown) => void) | undefined;
+    mocks.load.mockReturnValue(
+      new Promise((resolve) => {
+        releaseLoad = resolve;
+      }),
+    );
+    const flags = await import("./index");
+    const initialization = flags.initializeFeatureFlags();
+    await expect(flags.setUxFeatureBundle("refreshed")).rejects.toThrow("not initialized");
+    const store = {
+      get: vi
+        .fn()
+        .mockResolvedValue({ state: { overrides: { voice_recording: true } }, version: 1 }),
+      set: vi.fn().mockResolvedValue(undefined),
+      save: vi.fn().mockResolvedValue(undefined),
+    };
+    await waitFor(() => expect(releaseLoad).toBeDefined());
+    releaseLoad?.(store);
+    await initialization;
+    expect(flags.getFeatureFlagOverrides()).toMatchObject({ voice_recording: true });
+    await flags.setUxFeatureBundle("refreshed");
+    expect(flags.getFeatureFlagOverrides()).toMatchObject({
+      voice_recording: true,
+      ux_refresh_v1: true,
+    });
+    expect(store.set).toHaveBeenCalledWith(
+      "featureFlags",
+      expect.objectContaining({
+        state: {
+          overrides: expect.objectContaining({ voice_recording: true, ux_refresh_v1: true }),
+        },
+      }),
+    );
+  });
+
+  it.each(["legacy", "refreshed"] as const)(
+    "persists %s together without enabling specialist features",
+    async (bundle) => {
+      const flags = await import("./index");
+      flags.featureFlagTestHooks.setCache({ voice_recording: false, appearance_parity: true });
+      localStorage.setItem("appearance-witness", "irc/custom-colors");
+      await flags.setUxFeatureBundle(bundle);
+      const enabled = bundle === "refreshed";
+      for (const key of ["ux_refresh_v1", "message_action_parity", "composer_parity"] as const) {
+        expect(flags.getFlag(key)).toBe(enabled);
+      }
+      expect(flags.getFlag("voice_recording")).toBe(false);
+      expect(flags.getFlag("appearance_parity")).toBe(true);
+      expect(localStorage.getItem("appearance-witness")).toBe("irc/custom-colors");
+      const { readOverrides } = await import("./store");
+      expect(await readOverrides()).toEqual({
+        voice_recording: false,
+        appearance_parity: true,
+        ux_refresh_v1: enabled,
+        message_action_parity: enabled,
+        composer_parity: enabled,
+      });
+      // A bundle does not turn the granular escape hatch into a dependency.
+      await flags.setFeatureFlagOverride("composer_parity", false);
+      expect(flags.getFlag("composer_parity")).toBe(false);
+      expect(flags.getFlag("ux_refresh_v1")).toBe(enabled);
+    },
+  );
+
+  it("rolls the whole bundle back when durable persistence fails", async () => {
+    mocks.isTauri.mockReturnValue(true);
+    mocks.load.mockResolvedValue({
+      get: vi.fn().mockResolvedValue(undefined),
+      set: vi.fn(),
+      save: vi.fn().mockRejectedValue(new Error("disk full")),
+    });
+    const flags = await import("./index");
+    flags.featureFlagTestHooks.setCache({ ux_refresh_v1: false, voice_recording: true });
+    await expect(flags.setUxFeatureBundle("refreshed")).rejects.toThrow();
+    expect(flags.getFeatureFlagOverrides()).toEqual({
+      ux_refresh_v1: false,
+      voice_recording: true,
+    });
+  });
+});

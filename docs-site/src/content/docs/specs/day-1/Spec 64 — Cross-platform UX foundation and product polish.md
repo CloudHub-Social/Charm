@@ -316,3 +316,25 @@ flags, account/room permissions and saved preferences remain unchanged. The
 [existing UX recovery ledger](/operations/ux-recovery/) owns source mappings,
 hosted regression/security/axe/visual evidence and remaining snapshot/device gaps.
 This source integration is not full P0–P12 completion; P6–P11 remain backlog.
+
+
+## P6/P7 shared actions and supported bundles
+
+All message layouts share one action-permission and ref/focus adapter while
+retaining their Bubble, Modern and IRC presentation. Existing shared gesture,
+reaction and collision primitives remain authoritative; this increment does not
+rewrite the frontend or change account/room permissions.
+
+Internal Labs offers explicit legacy/refreshed UX bundles for shell refresh,
+message-action parity and composer parity. Each bundle persists one override
+snapshot; a durable write failure restores the previous persisted overrides.
+These developer bundles do not migrate saved appearance preferences, alter
+catalog defaults or require voice or other specialist features. Individual
+flags remain available for rollback. Local Labs overrides retain the existing
+precedence over ordinary remote values; clear an override to resume remote
+rollout control. This does not change flag-resolution policy.
+
+The [existing UX recovery ledger](/operations/ux-recovery/) maps approved P6/P7
+outcomes to source, verification, dependencies and owners. Broader
+composer/header/context consolidation and physical acceptance remain outstanding;
+P8–P11 remain coordinator-owned backlog. No default-on rollout is authorized.

@@ -18,6 +18,28 @@ afterEach(() => vi.restoreAllMocks());
 const A_FLAG = "canary";
 
 describe("LabsPanel", () => {
+  it("applies and rolls back the supported UX bundle from Labs", async () => {
+    featureFlagTestHooks.setCache({});
+    render(<LabsPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Use refreshed UX" }));
+    const shell = screen.getByRole("switch", { name: "Toggle Ux refresh v1" });
+    await waitFor(() => expect(shell).toBeChecked());
+    expect(screen.getByRole("switch", { name: "Toggle Composer parity" })).toBeChecked();
+    expect(screen.getByRole("switch", { name: "Toggle Message action parity" })).toBeChecked();
+    expect(screen.getByRole("switch", { name: "Toggle Voice recording" })).not.toBeChecked();
+    const rollback = screen.getByRole("button", { name: "Use legacy UX" });
+    await waitFor(() => expect(rollback).toBeEnabled());
+    fireEvent.click(rollback);
+    await waitFor(() => expect(shell).not.toBeChecked());
+    expect(screen.getByRole("switch", { name: "Toggle Composer parity" })).not.toBeChecked();
+  });
+
+  it("disables UX bundles until flags are initialized", () => {
+    render(<LabsPanel />);
+    expect(screen.getByRole("button", { name: "Use refreshed UX" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Use legacy UX" })).toBeDisabled();
+  });
+
   it("reports rejected flag changes without exposing backend errors", async () => {
     vi.spyOn(featureFlags, "setFeatureFlagOverride").mockRejectedValueOnce(
       new Error("private backend detail"),
