@@ -56,6 +56,13 @@ def validate(app, instances, revision=None):
         raise ValueError("cutover requires existing single-instance capacity")
     if (app.get("spec") or {}).get("workers") or (app.get("spec") or {}).get("jobs"):
         raise ValueError("unexpected background components prevent cutover")
+    # An archived source is not sufficient when state migration would reject
+    # the proposed binary: stop before requesting a rollout.
+    envs = services[0].get("envs") or []
+    if any(e.get("key", "").startswith("CHARM_WEB_SERVER_STATE_") for e in envs):
+        cutover = [e.get("value") for e in envs if e.get("key") == "CHARM_WEB_SERVER_STATE_CUTOVER_SHA"]
+        if not revision or cutover != [revision]:
+            raise ValueError("state cutover does not match proposed revision")
 
 
 def read(*args):

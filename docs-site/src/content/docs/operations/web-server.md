@@ -312,6 +312,15 @@ category, and exit without opening the destination or starting the service.
 Any other value also stops startup. This mode does not read object bodies or
 alter the migration bounds; deploying it requires its own reviewed execution
 plan and does not establish that a subsequent cutover will pass.
+The archived-source controller also refuses to request a normal rollout if
+the installed state cutover revision differs from the proposed revision.
+The inspection dispatch is limited to PR #614's protected merge revision,
+requires an explicitly disabled provider autodeploy setting and an empty R2
+precheck, and uses the existing provider environments. It stops if the
+provider cannot identify the exact candidate revision; a stop request is not
+a guaranteed shutdown or billing cap. Review its execution plan and reconcile
+archive, secret bindings and the separate destination postcheck before retrying
+or performing a cutover.
 
 For the ten-session planning scenario, doubling the estimated operations for that
 single retry remains below one million Class A and seven million Class B requests

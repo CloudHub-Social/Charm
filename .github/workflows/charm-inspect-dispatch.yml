@@ -1,0 +1,99 @@
+# REVIEW DRAFT ONLY: install on protected main in same merge as deploy hold.
+name: Charm state inventory inspection
+on:
+  workflow_dispatch:
+    inputs:
+      sole_writer_coordinated:
+        description: 'Confirm the sole-writer interval is coordinated'
+        type: boolean
+        required: true
+      budget_headroom_verified:
+        description: 'Confirm the approved budget headroom was verified'
+        type: boolean
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: Web server deploy (companion API)
+  cancel-in-progress: false
+jobs:
+  r2_precheck:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: cloudflare-preview
+    outputs:
+      empty: ${{ steps.check.outputs.empty }}
+    steps:
+      - id: check
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          token = os.environ.get('CLOUDFLARE_API_TOKEN')
+          if not token:
+              raise SystemExit('Existing Cloudflare binding unavailable')
+          url = 'https://api.cloudflare.com/client/v4/accounts/bb346e009981b1b928a5b8e008f7021d/r2/buckets/charm-api-state-production/objects?per_page=1'
+          req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + token})
+          try:
+              with urllib.request.urlopen(req, timeout=15) as response:
+                  result = json.load(response)
+              info = result.get('result_info')
+              if (result.get('success') is not True or result.get('result') != []
+                      or (info is not None and (not isinstance(info, dict)
+                          or info.get('is_truncated') is not False or info.get('cursor')))):
+                  raise ValueError()
+          except Exception:
+              raise SystemExit('Destination empty state not established')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write('empty=empty\n')
+          print('Destination is empty')
+          PY
+  inspect:
+    needs: r2_precheck
+    if: github.ref == 'refs/heads/main' && inputs.sole_writer_coordinated && inputs.budget_headroom_verified && needs.r2_precheck.outputs.empty == 'empty'
+    runs-on: ubuntu-latest
+    environment: digitalocean-production
+    timeout-minutes: 40
+    env:
+      DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+      CHARM_R2_PREFLIGHT: ${{ needs.r2_precheck.outputs.empty }}
+      CHARM_BUDGET_HEADROOM: confirmed
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: digitalocean/action-doctl@3cb3953159719656269e044e0e24ca16dd2a690f
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+      - name: One bounded inventory inspection
+        run: python3 scripts/charm-inspect-handoff.py "$GITHUB_SHA" --execute --coordinated-sole-writer
+  r2_postcheck:
+    needs: [r2_precheck, inspect]
+    if: always() && github.ref == 'refs/heads/main' && needs.r2_precheck.outputs.empty == 'empty'
+    runs-on: ubuntu-latest
+    environment: cloudflare-preview
+    steps:
+      - name: Verify destination remains empty
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          token = os.environ.get('CLOUDFLARE_API_TOKEN')
+          if not token:
+              raise SystemExit('Existing Cloudflare binding unavailable')
+          url = 'https://api.cloudflare.com/client/v4/accounts/bb346e009981b1b928a5b8e008f7021d/r2/buckets/charm-api-state-production/objects?per_page=1'
+          req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + token})
+          try:
+              with urllib.request.urlopen(req, timeout=15) as response:
+                  result = json.load(response)
+              info = result.get('result_info')
+              if (result.get('success') is not True or result.get('result') != []
+                      or (info is not None and (not isinstance(info, dict)
+                          or info.get('is_truncated') is not False or info.get('cursor')))):
+                  raise ValueError()
+          except Exception:
+              raise SystemExit('Destination empty state not established')
+          print('Destination is empty')
+          PY
