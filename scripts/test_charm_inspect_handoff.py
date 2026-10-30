@@ -187,4 +187,25 @@ class Fixtures(unittest.TestCase):
         keyword=next(k for k in calls[0].keywords if k.arg=='allow_unarchive')
         self.assertEqual(ast.unparse(keyword.value), "opt_in == 'true'")
 
+    def test_readonly_precheck_has_only_main_scoped_gets(self):
+        path=Path(__file__).resolve().parents[1]/'.github/workflows/charm-readonly-precheck.yml'
+        config=yaml.safe_load(path.read_text())
+        jobs=config['jobs']
+        self.assertEqual(set(jobs),{'validate','provider','destination'})
+        self.assertEqual(config['permissions'],{'contents':'read'})
+        self.assertEqual(jobs['validate']['env']['TARGET_REF'],'${{ github.ref }}')
+        cmd=jobs['validate']['steps'][0]['run']
+        for ref,expected in [('refs/heads/main',0),('refs/heads/other',1),('',1)]:
+            self.assertEqual(subprocess.run(['/bin/bash','-c',cmd],env={'TARGET_REF':ref},capture_output=True).returncode,expected)
+        for name in ['provider','destination']:
+            job=jobs[name]
+            self.assertEqual(job['needs'],'validate')
+            self.assertEqual(job['if'],"github.ref == 'refs/heads/main'")
+            self.assertEqual(len(job['steps']),1)
+            run=job['steps'][0]['run']
+            self.assertIn("method='GET'",run)
+            for prohibited in ['apps update','/cancel',"method='POST'","method='PUT'",'charm-inspect-handoff.py']:
+                self.assertNotIn(prohibited,run)
+        self.assertIn("else 'unknown'",jobs['provider']['steps'][0]['run'])
+
 if __name__=='__main__': unittest.main()
