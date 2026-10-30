@@ -7,6 +7,7 @@ import {
   FEATURE_FLAG_CATALOG,
   FEATURE_FLAG_KEYS,
   setFeatureFlagOverride,
+  setUxFeatureBundle,
   useFeatureFlagOverrides,
 } from "@/featureFlags";
 import { SettingsCard, SettingTile } from "./components/SettingsCard";
@@ -58,6 +59,28 @@ export function LabsPanel() {
           {error}
         </p>
       )}
+      <SettingsCard heading="Supported UX bundles">
+        <p className="px-4 py-3 text-sm text-muted-foreground">
+          Developer presets for shell, message actions and composer. Saved appearance and optional
+          features such as voice stay unchanged. Individual flags below remain available for rollback.
+        </p>
+        <div className="flex flex-wrap gap-2 px-4 py-3">
+          <Button
+            className="min-h-11"
+            disabled={pending}
+            onClick={() => void applyChange(() => setUxFeatureBundle("legacy"))}
+          >
+            Use legacy UX
+          </Button>
+          <Button
+            className="min-h-11"
+            disabled={pending}
+            onClick={() => void applyChange(() => setUxFeatureBundle("refreshed"))}
+          >
+            Use refreshed UX
+          </Button>
+        </div>
+      </SettingsCard>
       <SettingsCard heading="Feature flags">
         {FEATURE_FLAG_KEYS.map((key: FeatureFlagKey) => {
           const definition = FEATURE_FLAG_CATALOG[key];

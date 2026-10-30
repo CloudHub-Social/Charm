@@ -746,3 +746,37 @@ by this PR. Do not close #539 or #526 when this bounded repair merges.
 All automated verification is performed in GitHub Actions; no local verification
 commands are run on the owner's Mac. No dependencies, credentials, production
 settings, real-message test data, or Sable resources are changed.
+
+
+## P6/P7 bounded implementation — 2026-10-30
+
+Coordinator scope is restored by issue #539 receipt 6523601724 and the owner's
+clarification: P6 owns shared interaction/accessibility primitives across
+Bubble/Modern/IRC and composer/header/context; P7 owns supported product/flag
+bundles, separate from saved user settings. This section supersedes only the
+older **unassigned P6/P7** row. P8–P11 remain **coordinator-owned BACKLOG**,
+unassigned to this implementer. P0/P12 remain coordinator continuity/acceptance
+work. No second roadmap or mandatory specialist feature is introduced.
+
+Base: merged P1–P5 `4259d6d0239ba8e7de2ccc56e6a872bb9df7e1c2`.
+Implementation branch: `codex/charm-p6-p7-20261030`. Before effects, the live
+CloudHub-Social/Charm API reported push permission; origin targets that repository.
+The owner authorizes bounded source/commit/PR work, not merge, rollout or release.
+SableClient remains strictly read-only. No dependencies or credentials change.
+
+| Original approved outcome | Source/spec/test evidence and this increment | Dependency / next action / ownership |
+| --- | --- | --- |
+| P6 shared frame and actions, distinct Bubble/Modern/IRC | Specs 27/37/64; `MessageRow` retains layout dispatch and shared pending/stable-event guards. All three layouts now use `MessageRowActions` for identical action permission, redaction/report, ref/focus and callback plumbing; shared `messageActionSurface` retains touch/selection/context handling and overflow-safe toolbar geometry. Existing layout, action, dispatcher and browser tests remain required | Implementer owns this extraction through PR checks; fresh CI required. Existing visual tokens, saved layout, row grouping and permission guards remain intact |
+| P6 reaction geometry, keyboard/touch focus and accessibility | Specs 37/38/64; existing `ReactionBar`, `MessageActions`, `useMessageActionPosition` and `messageActionSurface` own 44px action/reaction targets, portals, focus restoration and selection guards. Existing Storybook/axe and browser journeys cover these primitives | No parallel interaction system. CI regression evidence still required; physical keyboard/touch/screen-reader acceptance remains P12/coordinator debt |
+| P6 composer/header/context | Specs 41/42/52/64; merged P1–P5 `Composer`, `ChatShell`, `AppShell`, adaptive layout and context focus are retained dependencies | Broader consolidation remains P6 follow-up with this implementation lane, subject to evidence; not claimed complete by the action extraction. Preserve send ownership, draft guards and independent specialist flags |
+| P7 supported coherent bundles / rollback | Specs 37/64; Labs adds **legacy** and **refreshed** bundles for `ux_refresh_v1`, `message_action_parity`, `composer_parity`. One override snapshot/persistence operation applies the three values together using existing durable rollback. `featureFlags.test.ts` covers both profiles, persistence failure and granular rollback; `LabsPanel.test.tsx` covers applying both | Implementer owns source and CI. Bundles are explicit developer actions in the existing internal Labs surface, never a startup migration or default-on promotion |
+| P7 user settings separate from flags | Spec 27/64; bundles never write appearance atoms/preferences or change flag defaults. Voice, emoji, media, recovery, search and other specialist flags stay independent; existing individual flags remain usable | No new mandatory features. The two named profiles are supported baselines; arbitrary developer combinations retain individual switches but are not all newly qualified. Native/device and rollout acceptance remain coordinator-owned |
+
+Verification at source-edit checkpoint: **pending**, no local build/test/lint,
+format check, browser, docs or graph build run. Existing graph was queried read-only;
+its stale-ID warning is not current-head verification. Current-head commit, PR,
+workflow/check results and blockers will be recorded below after provider readback.
+Independent preview HTTP503 (#606), snapshot approval and physical-device debt from
+P1–P5 are retained dependencies, not inherited passing evidence. Codex review stays
+owner-waived, not passed. This increment is implementation, not P6/P7 programme
+acceptance, deployment or release.
