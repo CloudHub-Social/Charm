@@ -321,6 +321,10 @@ provider cannot identify the exact candidate revision; a stop request is not
 a guaranteed shutdown or billing cap. Review its execution plan and reconcile
 archive, secret bindings and the separate destination postcheck before retrying
 or performing a cutover.
+The handoff reports success only after capturing a conclusive inventory
+category and verifying that the retained app spec matches its original state.
+If the inspection flag, maintenance configuration or another setting remains
+changed after rollback, it stops for reconciliation without a second update.
 
 For the ten-session planning scenario, doubling the estimated operations for that
 single retry remains below one million Class A and seven million Class B requests

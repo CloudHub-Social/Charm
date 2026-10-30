@@ -1,6 +1,8 @@
 import ast, copy, sys, unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+import urllib.error
 path=str(Path(__file__).with_name('charm-inspect-handoff.py'))
 tree=ast.parse(open(path).read(), filename=path)
 selected=[n for n in tree.body if isinstance(n,(ast.Import,ast.ImportFrom,ast.FunctionDef)) or (isinstance(n,ast.Assign) and all(isinstance(t,ast.Name) for t in n.targets))]
@@ -69,5 +71,37 @@ class Fixtures(unittest.TestCase):
         with self.assertRaises(RuntimeError): ns['release_identities'](REV,REV,wrong)
         pr['merged']=False
         with self.assertRaises(RuntimeError): ns['release_identities'](REV,REV,pr)
+
+    def test_success_requires_conclusive_category_and_original_spec(self):
+        original=sample()
+        for category in ns['CATEGORIES'][:-1]:
+            ns['require_reconciled_result'](original,copy.deepcopy(original),category)
+        for category in [None,'state inventory inspection unavailable','unknown']:
+            with self.assertRaises(RuntimeError):
+                ns['require_reconciled_result'](original,copy.deepcopy(original),category)
+        retained=copy.deepcopy(original)
+        retained['services'][0]['envs'].append({'key':'CHARM_WEB_SERVER_INVENTORY_INSPECT_ONLY','value':'1'})
+        with self.assertRaises(RuntimeError):
+            ns['require_reconciled_result'](original,retained,ns['CATEGORIES'][0])
+        retained=copy.deepcopy(original); retained['maintenance']['archive']=False
+        with self.assertRaises(RuntimeError):
+            ns['require_reconciled_result'](original,retained,ns['CATEGORIES'][0])
+
+    def test_transient_read_retries_without_retrying_denial_or_deadline(self):
+        fake_time=SimpleNamespace(monotonic=lambda: 0,sleep=lambda _: None)
+        read=Mock(side_effect=[urllib.error.URLError('synthetic'),{'deployment':{'phase':'BUILDING'}}])
+        with patch.dict(ns,{'req':read,'time':fake_time}):
+            self.assertEqual(ns['read_candidate_until']('synthetic','synthetic',60),{'phase':'BUILDING'})
+        self.assertEqual(read.call_count,2)
+        denied=Mock(side_effect=urllib.error.HTTPError('https://example.invalid',403,'denied',None,None))
+        with patch.dict(ns,{'req':denied,'time':fake_time}):
+            with self.assertRaises(urllib.error.HTTPError):
+                ns['read_candidate_until']('synthetic','synthetic',60)
+        self.assertEqual(denied.call_count,1)
+        expired=Mock(side_effect=urllib.error.URLError('synthetic'))
+        with patch.dict(ns,{'req':expired,'time':SimpleNamespace(monotonic=lambda: 61,sleep=lambda _: None)}):
+            with self.assertRaises(RuntimeError):
+                ns['read_candidate_until']('synthetic','synthetic',60)
+        self.assertEqual(expired.call_count,1)
 
 if __name__=='__main__': unittest.main()

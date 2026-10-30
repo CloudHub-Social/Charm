@@ -11,6 +11,7 @@ import re
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 
 APP = 'd920ec97-4a06-40e1-b1b5-9cbc903f5ec6'
@@ -101,6 +102,32 @@ def candidate_has_identity(deployment, revision):
     services = deployment.get('services') or []
     return (len(services) == 1 and services[0].get('name') == 'api'
             and services[0].get('source_commit_hash') == revision)
+
+
+def require_reconciled_result(initial, retained, category):
+    # Restoring the active archive alone does not prove the retained app spec
+    # was restored. Never request another update to clean it up automatically.
+    if retained != initial:
+        raise RuntimeError('retained app spec differs from original; manual reconciliation required')
+    if category not in CATEGORIES[:-1]:
+        raise RuntimeError('no conclusive inventory category captured')
+
+
+def read_candidate_until(deployment, token, deadline):
+    # Retry transient reads only. Authorization denials and rate limits are
+    # not retried, and a missing identity never permits cancellation.
+    while True:
+        try:
+            return req(BASE + '/deployments/' + deployment, token)['deployment']
+        except urllib.error.HTTPError as error:
+            if error.code < 500:
+                raise
+        except (urllib.error.URLError, TimeoutError):
+            pass
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError('candidate read unavailable at deadline; reconcile')
+        time.sleep(min(15, remaining))
 
 
 def build_spec(original, revision):
@@ -247,7 +274,7 @@ def main():
     category_seen = None
     deadline = started + 30 * 60
     while True:
-        deployment = req(BASE + '/deployments/' + DEPLOYMENT, do_token)['deployment']
+        deployment = read_candidate_until(DEPLOYMENT, do_token, deadline)
         # The category can appear before the first successful status read.
         identified = candidate_has_identity(deployment, revision)
         category, saw_runtime = logs(DEPLOYMENT, do_token) if identified else (None, False)
@@ -267,7 +294,7 @@ def main():
             raise RuntimeError('candidate unexpectedly active; reconcile without cancellation')
         if category_seen or time.monotonic() >= deadline:
             # Fresh read avoids knowingly cancelling a terminal deployment.
-            latest = req(BASE + '/deployments/' + DEPLOYMENT, do_token)['deployment']
+            latest = read_candidate_until(DEPLOYMENT, do_token, deadline)
             if not candidate_has_identity(latest, revision):
                 raise RuntimeError('candidate source identity unavailable; no cancellation')
             current = latest.get('phase')
@@ -291,10 +318,12 @@ def main():
             archived_state(post_app, post_active, post_instances)
             if secret_entries(post_app['spec']) != initial_secrets:
                 raise RuntimeError('complete encrypted entries changed')
-            print('Archived zero-instance state and encrypted entries verified; destination postcheck required.', flush=True)
-            return
         except (RuntimeError, KeyError, ValueError):
             time.sleep(15)
+            continue
+        require_reconciled_result(initial, post_app['spec'], category_seen)
+        print('Archived state, original app spec and inventory category verified; destination postcheck required.', flush=True)
+        return
     raise RuntimeError('rollback state remains unverified')
 
 
