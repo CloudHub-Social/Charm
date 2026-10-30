@@ -130,11 +130,15 @@ def read_candidate_until(deployment, token, deadline):
         time.sleep(min(15, remaining))
 
 
-def build_spec(original, revision):
+def build_spec(original, revision, allow_unarchive=False):
     spec = copy.deepcopy(original)
-    maintenance = spec.get('maintenance') or {}
-    if not isinstance(maintenance, dict) or maintenance.get('archive', False) is not False:
-        raise RuntimeError('diagnostic proposal must be unarchived')
+    maintenance = spec.get('maintenance', {})
+    if not isinstance(maintenance, dict) or not isinstance(maintenance.get('archive', False), bool):
+        raise RuntimeError('invalid retained maintenance configuration')
+    if maintenance.get('archive', False) and allow_unarchive is not True:
+        raise RuntimeError('retained archive requires explicit unarchive opt-in')
+    # The explicitly invoked diagnostic needs an unarchived proposal. Keep the
+    # original unchanged so reconciliation requires its complete restoration.
     spec['maintenance'] = {**maintenance, 'archive': False}
     service = spec['services'][0]
     github = service.get('github') or {}
@@ -229,7 +233,10 @@ def main():
     source_revision(revision)
     app, active, instances = app_state(do_token)
     initial = archived_state(app, active, instances)
-    proposed = build_spec(initial, revision)
+    opt_in = os.environ.get('CHARM_ALLOW_ARCHIVED_RETAINED_SPEC')
+    if opt_in not in ('true', 'false'):
+        raise RuntimeError('invalid explicit unarchive opt-in')
+    proposed = build_spec(initial, revision, allow_unarchive=opt_in == 'true')
     initial_secrets = secret_entries(initial)
     if secret_entries(proposed) != initial_secrets:
         raise RuntimeError('complete secret entries changed')

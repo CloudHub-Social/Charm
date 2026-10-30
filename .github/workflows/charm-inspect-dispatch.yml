@@ -11,6 +11,10 @@ on:
         description: "Confirm the approved budget headroom was verified"
         type: boolean
         required: true
+      allow_archived_retained_spec:
+        description: "Allow temporary unarchive of an archived retained spec"
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -90,6 +94,7 @@ jobs:
       DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
       CHARM_R2_PREFLIGHT: ${{ needs.r2_precheck.outputs.empty }}
       CHARM_BUDGET_HEADROOM: confirmed
+      CHARM_ALLOW_ARCHIVED_RETAINED_SPEC: ${{ inputs.allow_archived_retained_spec }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
