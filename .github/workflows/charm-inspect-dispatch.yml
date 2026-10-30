@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       sole_writer_coordinated:
-        description: 'Confirm the sole-writer interval is coordinated'
+        description: "Confirm the sole-writer interval is coordinated"
         type: boolean
         required: true
       budget_headroom_verified:
-        description: 'Confirm the approved budget headroom was verified'
+        description: "Confirm the approved budget headroom was verified"
         type: boolean
         required: true
 permissions:
