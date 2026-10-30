@@ -180,6 +180,25 @@ the new source push naturally requalifies the gallery rather than rerunning the
 obsolete failed run broadly. Preview40908242116 independently returned the same
 archived-upstream HTTP503 at16:07:32Z and remains with PR606.
 
+Follow-up browser evidence distinguishes the application repair from fixture
+iterations: 37c5b9b5 successfully staged a native clipboard image and kept voice
+send enabled, then its broad editable selector matched ProseMirror's temporary
+paste buffer. At 503c3bd7 the complete drop/paste/voice/file journey passed; the
+remaining failure was the older resize journey using a desktop-only textbox
+name introduced by the fixture correction. Both journeys now target the single
+textbox role, independent of compact placeholder copy, retaining node identity,
+draft/audio continuity, explicit send and geometry assertions. Fresh hosted
+qualification is required; none of these partial runs qualifies the whole PR.
+
+Substantive follow-ups also align medium native focus with the message-pinning
+kill switch, keep the IRC reaction controller mounted through last-reaction
+removal, and release reactor return-focus references after closure. An empty
+reaction focus anchor persists only while needed for focus return and disappears
+on blur; it does not leave a permanent screen-reader landmark. Flag-off busy
+drop/paste rejection now uses the existing dismissible upload tray with an
+announced error and explicit retry guidance, without exposing disabled staging
+or clearing the text/voice draft. Regression definitions cover these boundaries.
+
 Implementation is in progress, not yet qualified. Exact-head hosted frontend,
 browser, security, axe, current screenshots and substantive review dispositions
 must pass. Existing gallery candidates and snapshot approvals are historical;

@@ -526,7 +526,7 @@ export function ChatShell({
     setPendingAttachmentCaption("");
   }, [activeRoomId, currentUserId]);
   const sendGate = useComposerSendGate(`${currentUserId}:${activeRoomId}`, roomMutationsBlockedRef);
-  const { uploads, handleAttachFile, dismissUpload, dismissFailedUploadForFile } =
+  const { uploads, handleAttachFile, dismissUpload, dismissFailedUploadForFile, rejectFile } =
     useAttachmentUploads(activeRoomId, roomMutationsBlockedRef, currentUserId);
   useEffect(() => {
     if (!roomMutationsBlocked || uploads.length === 0) return;
@@ -617,6 +617,7 @@ export function ChatShell({
     if (roomMutationsBlockedRef.current || !sendGate.isCurrent()) return;
     if (!mediaSendPolishEnabled) {
       if (sendGate.canSubmit()) void sendExternalAttachment(file);
+      else rejectFile(file);
       return;
     }
     const filename = typeof file === "string" ? (file.split(/[/\\]/).pop() ?? file) : file.name;

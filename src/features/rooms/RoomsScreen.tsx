@@ -528,7 +528,9 @@ export function RoomsScreen({
   const layout = useAdaptiveLayout();
   const { width } = useAdaptiveLayoutState();
   const mediumContextVisible =
-    uxRefreshEnabled && width === "medium" && (membersDrawerOpen || pinnedMessagesDrawerOpen);
+    uxRefreshEnabled &&
+    width === "medium" &&
+    (membersDrawerOpen || (messagePinningEnabled && pinnedMessagesDrawerOpen));
   // On mobile, the active room is only actually on-screen while `AppShell`
   // is showing its detail view — the Chats/People tabs show a list instead,
   // with the "active" room still selected but not visible. Without this,

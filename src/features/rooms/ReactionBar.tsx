@@ -74,6 +74,7 @@ function ScopedReactionBar({
   const [modalKey, setModalKeyState] = useState<string | null>(null);
   // Keep the contextual target in layout until modal focus has returned.
   const [detailsVisibleKey, setDetailsVisibleKey] = useState<string | null>(null);
+  const [retainEmptyAnchor, setRetainEmptyAnchor] = useState(false);
   const [tooltipKey, setTooltipKeyState] = useState<string | null>(null);
   // Keep the synchronous request lifecycle in refs and use a per-key
   // generation to prevent duplicate requests and discard responses invalidated
@@ -204,7 +205,12 @@ function ScopedReactionBar({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modalKey, modalReaction, tooltipKey, tooltipReaction]);
 
-  if (reactions.length === 0 && returnFocusRef.current === null) {
+  if (
+    reactions.length === 0 &&
+    modalKey === null &&
+    detailsVisibleKey === null &&
+    !retainEmptyAnchor
+  ) {
     return null;
   }
 
@@ -312,6 +318,9 @@ function ScopedReactionBar({
         onTouchEnd={(event) => event.stopPropagation()}
         onTouchMove={(event) => event.stopPropagation()}
         onTouchCancel={(event) => event.stopPropagation()}
+        onBlur={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget)) setRetainEmptyAnchor(false);
+        }}
       >
         {chips}
         {reactions.length > 0 && (
@@ -346,8 +355,10 @@ function ScopedReactionBar({
           else {
             const fallback =
               groupRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)");
+            if (!fallback) setRetainEmptyAnchor(true);
             (fallback ?? groupRef.current)?.focus();
           }
+          returnFocusRef.current = null;
           setDetailsVisibleKey(null);
         }}
       />

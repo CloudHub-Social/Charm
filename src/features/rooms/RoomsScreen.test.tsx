@@ -11,7 +11,7 @@ import type { RoomSummary } from "@/lib/matrix";
 
 const mockUseAdaptiveLayout = vi.fn(() => "desktop");
 const mockAdaptiveWidth = vi.fn(() => "wide");
-const mockUseFlag = vi.fn(() => true);
+const mockUseFlag = vi.fn((_key?: string) => true);
 const mockUseFeatureFlagPersistenceVersion = vi.fn(() => 0);
 const mockUseFeatureFlagPersistenceSettled = vi.fn(() => true);
 const mockIsWebBuild = vi.fn(() => false);
@@ -37,7 +37,7 @@ vi.mock("@/features/shell/useAdaptiveLayout", () => ({
 }));
 
 vi.mock("@/featureFlags", () => ({
-  useFlag: () => mockUseFlag(),
+  useFlag: (key: string) => mockUseFlag(key),
   useFeatureFlagPersistenceVersion: () => mockUseFeatureFlagPersistenceVersion(),
   useFeatureFlagPersistenceSettled: () => mockUseFeatureFlagPersistenceSettled(),
 }));
@@ -561,6 +561,31 @@ describe("RoomsScreen", () => {
     await waitFor(() => expect(setFocusedRoom).toHaveBeenLastCalledWith(null));
     act(() => store.set(membersDrawerOpenAtomFamily("!a:example.org"), false));
     await waitFor(() => expect(setFocusedRoom).toHaveBeenLastCalledWith("!a:example.org"));
+    focus.mockRestore();
+  });
+
+  it("restores medium chat focus when pinning is disabled with its drawer atom still open", async () => {
+    const focus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    mockAdaptiveWidth.mockReturnValue("medium");
+    const store = createStore();
+    store.set(pinnedMessagesDrawerOpenAtomFamily("!a:example.org"), true);
+    const ui = () => (
+      <Provider store={store}>
+        <RoomsScreen
+          currentUserId="@me:example.org"
+          deepLinkRoomId={null}
+          onDeepLinkConsumed={() => {}}
+          onLoggedOut={() => {}}
+        />
+      </Provider>
+    );
+    const view = render(ui());
+    await screen.findByText("chat-content:!a:example.org");
+    await waitFor(() => expect(setFocusedRoom).toHaveBeenLastCalledWith(null));
+    mockUseFlag.mockImplementation((key) => key !== "message_pinning");
+    view.rerender(ui());
+    await waitFor(() => expect(setFocusedRoom).toHaveBeenLastCalledWith("!a:example.org"));
+    expect(store.get(pinnedMessagesDrawerOpenAtomFamily("!a:example.org"))).toBe(true);
     focus.mockRestore();
   });
 

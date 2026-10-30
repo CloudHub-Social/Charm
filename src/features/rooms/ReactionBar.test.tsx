@@ -681,5 +681,30 @@ describe("ReactionBar", () => {
       expect(screen.getByRole("group", { name: "Reactions no longer available" })).toHaveFocus(),
     );
     expect(props.onToggle).not.toHaveBeenCalled();
+    const next = document.createElement("button");
+    document.body.append(next);
+    next.focus();
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("group", { name: "Reactions no longer available" }),
+      ).not.toBeInTheDocument(),
+    );
+    next.remove();
+  });
+
+  it("removes the empty landmark after an ordinary close followed by a later removal", async () => {
+    const props = { onToggle: vi.fn(), roomId: "!room:example.org", eventId: "$event" };
+    const view = render(
+      <ReactionBar {...props} reactions={[{ key: "👍", count: 1, reacted_by_me: false }]} />,
+    );
+    const details = screen.getByRole("button", { name: "View all 1 reactions for 👍" });
+    details.focus();
+    fireEvent.click(details);
+    await screen.findByRole("dialog");
+    fireEvent.click(screen.getByRole("button", { name: "Close", exact: true }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() => expect(details).toHaveFocus());
+    view.rerender(<ReactionBar {...props} reactions={[]} />);
+    expect(screen.queryByRole("group")).not.toBeInTheDocument();
   });
 });

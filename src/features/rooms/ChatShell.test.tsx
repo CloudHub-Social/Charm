@@ -5636,7 +5636,9 @@ describe("ChatShell", () => {
     fireEvent.click(screen.getByTestId("voice-gesture-mode"));
     fireEvent.drop(textarea, { dataTransfer: { files: [new File(["fake"], "hidden.png")] } });
     expect(screen.queryByRole("button", { name: "Send attachment" })).not.toBeInTheDocument();
-    expect(screen.queryByText("hidden.png")).not.toBeInTheDocument();
+    expect(screen.getByText("hidden.png")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(/^File was not attached\./);
+    expect(screen.getByRole("button", { name: "Dismiss failed upload hidden.png" })).toBeEnabled();
     expect(sendAttachment).not.toHaveBeenCalled();
     expect(textarea).toHaveValue("Keep this draft");
   });

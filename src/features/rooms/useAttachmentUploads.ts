@@ -236,5 +236,27 @@ export function useAttachmentUploads(
     setUploads((prev) => prev.filter((upload) => upload.txnId !== txnId));
   }, []);
 
-  return { uploads, handleAttachFile, dismissUpload, dismissFailedUploadForFile };
+  function rejectFile(file: string | File) {
+    const filename = typeof file === "string" ? (file.split(/[/\\]/).pop() ?? file) : file.name;
+    setUploads((prev) => [
+      ...prev,
+      {
+        txnId: `blocked-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        filename,
+        sent: 0,
+        total: 0,
+        failed: true,
+        errorMessage:
+          "File was not attached. Finish the current send or discard the voice recording, then attach this file again.",
+      },
+    ]);
+  }
+
+  return {
+    uploads,
+    handleAttachFile,
+    dismissUpload,
+    dismissFailedUploadForFile,
+    rejectFile,
+  };
 }

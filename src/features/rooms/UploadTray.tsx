@@ -35,7 +35,7 @@ export function UploadTray({ uploads, onDismiss, cancellationEnabled }: UploadTr
           <span className="truncate text-foreground">{upload.filename}</span>
           {upload.failed ? (
             <>
-              <span className="text-destructive-foreground">
+              <span role="alert" className="text-destructive-foreground">
                 {upload.errorMessage ?? "Upload failed"}
               </span>
               <button
