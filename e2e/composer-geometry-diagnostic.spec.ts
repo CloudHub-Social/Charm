@@ -68,6 +68,35 @@ for (const refresh of [false, true]) {
     expect(geometry.placeholderProjectedBottom).toBeLessThanOrEqual(geometry.viewportHeight);
     await captureSnapshot(page, `composer-geometry-${refresh ? "refreshed" : "legacy"}`);
     await expect(page.getByRole("button", { name: "Attach" })).toBeVisible();
+    await editor.click();
+    await expect(editor).toBeFocused();
+    const measureCaret = () =>
+      editor.evaluate((element) => {
+        const selection = window.getSelection();
+        if (!selection || selection.rangeCount !== 1) throw new Error("Editor selection is absent");
+        const caret = selection.getRangeAt(0).getBoundingClientRect();
+        const editorBounds = element.getBoundingClientRect();
+        const shell = element.closest('[data-testid="composer-shell"]')!.getBoundingClientRect();
+        return {
+          caretTop: caret.top,
+          caretLeft: caret.left,
+          caretHeight: caret.height,
+          editorTop: editorBounds.top,
+          editorHeight: editorBounds.height,
+          shellHeight: shell.height,
+        };
+      });
+    const empty = await measureCaret();
+    await page.keyboard.type("x");
+    const typed = await measureCaret();
+    expect(empty.caretHeight).toBeGreaterThan(0);
+    expect(typed.caretHeight).toBeGreaterThan(0);
+    expect(Math.abs(typed.caretTop - empty.caretTop)).toBeLessThanOrEqual(1);
+    expect(typed.caretLeft).toBeGreaterThan(empty.caretLeft);
+    expect(Math.abs(typed.editorTop - empty.editorTop)).toBeLessThanOrEqual(1);
+    expect(Math.abs(typed.editorHeight - empty.editorHeight)).toBeLessThanOrEqual(1);
+    expect(Math.abs(typed.shellHeight - empty.shellHeight)).toBeLessThanOrEqual(1);
+    await captureSnapshot(page, `composer-geometry-typed-${refresh ? "refreshed" : "legacy"}`);
     await editor.fill("synthetic draft retains focus");
     await expect(editor).toBeFocused();
     await page.setViewportSize({ width: 390, height: 844 });
