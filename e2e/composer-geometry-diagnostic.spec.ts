@@ -26,47 +26,75 @@ for (const refresh of [false, true]) {
     await expect(editor).toHaveAttribute("aria-label", /Message A deliberately long room name/);
     const paragraph = editor.locator("p.is-editor-empty");
     await expect(paragraph).toBeVisible();
-    const geometry = await paragraph.evaluate((element) => {
-      const before = getComputedStyle(element, "::before");
-      const rect = element.getBoundingClientRect();
-      const probe = document.createElement("span");
-      const style = getComputedStyle(element);
-      Object.assign(probe.style, {
-        position: "fixed",
-        left: `${rect.left}px`,
-        top: `${rect.top}px`,
-        width: `${rect.width}px`,
-        font: style.font,
-        lineHeight: style.lineHeight,
-        letterSpacing: style.letterSpacing,
-        whiteSpace: before.whiteSpace,
-        overflowWrap: before.overflowWrap,
-        overflow: before.overflow,
-        textOverflow: before.textOverflow,
-        visibility: "hidden",
+    const measurePlaceholder = () =>
+      paragraph.evaluate((element) => {
+        const before = getComputedStyle(element, "::before");
+        const rect = element.getBoundingClientRect();
+        const probe = document.createElement("span");
+        const style = getComputedStyle(element);
+        Object.assign(probe.style, {
+          position: "fixed",
+          left: `${rect.left}px`,
+          top: `${rect.top}px`,
+          width: `${rect.width}px`,
+          font: style.font,
+          lineHeight: style.lineHeight,
+          letterSpacing: style.letterSpacing,
+          whiteSpace: before.whiteSpace,
+          overflowWrap: before.overflowWrap,
+          overflow: before.overflow,
+          textOverflow: before.textOverflow,
+          visibility: "hidden",
+        });
+        probe.textContent = element.getAttribute("data-placeholder");
+        document.body.append(probe);
+        const probeRect = probe.getBoundingClientRect();
+        const shell = element.closest('[data-testid="composer-shell"]')!.getBoundingClientRect();
+        const result = {
+          viewportHeight: window.innerHeight,
+          editorTop: rect.top,
+          editorBottom: rect.bottom,
+          shellBottom: shell.bottom,
+          placeholderProjectedBottom: probeRect.bottom,
+          placeholderFloat: before.float,
+          placeholderHeight: before.height,
+          placeholderContent: Boolean(element.getAttribute("data-placeholder")),
+          placeholderPosition: before.position,
+          placeholderLeft: Number.parseFloat(before.left),
+          placeholderRight: Number.parseFloat(before.right),
+          placeholderWidth: Number.parseFloat(before.width),
+          paragraphWidth: rect.width,
+          placeholderOverflow: before.overflowX,
+          placeholderWhiteSpace: before.whiteSpace,
+          placeholderTextOverflow: before.textOverflow,
+          bodyWidth: document.documentElement.scrollWidth,
+        };
+        probe.remove();
+        return result;
       });
-      probe.textContent = element.getAttribute("data-placeholder");
-      document.body.append(probe);
-      const probeRect = probe.getBoundingClientRect();
-      const shell = element.closest('[data-testid="composer-shell"]')!.getBoundingClientRect();
-      const result = {
-        viewportHeight: window.innerHeight,
-        editorTop: rect.top,
-        editorBottom: rect.bottom,
-        shellBottom: shell.bottom,
-        placeholderProjectedBottom: probeRect.bottom,
-        placeholderFloat: before.float,
-        placeholderHeight: before.height,
-        placeholderContent: Boolean(element.getAttribute("data-placeholder")),
-        bodyWidth: document.documentElement.scrollWidth,
-      };
-      probe.remove();
-      return result;
-    });
-    expect(geometry.placeholderContent).toBe(true);
-    expect(geometry.placeholderProjectedBottom).toBeLessThanOrEqual(geometry.shellBottom);
-    expect(geometry.placeholderProjectedBottom).toBeLessThanOrEqual(geometry.viewportHeight);
+    const assertContained = (geometry: Awaited<ReturnType<typeof measurePlaceholder>>) => {
+      expect(geometry.placeholderContent).toBe(true);
+      expect(geometry.placeholderPosition).toBe("absolute");
+      expect(geometry.placeholderLeft).toBeGreaterThanOrEqual(0);
+      expect(geometry.placeholderRight).toBeGreaterThanOrEqual(0);
+      expect(geometry.placeholderLeft + geometry.placeholderWidth).toBeLessThanOrEqual(
+        geometry.paragraphWidth + 0.5,
+      );
+      expect(geometry.placeholderOverflow).toBe("hidden");
+      expect(geometry.placeholderWhiteSpace).toBe("nowrap");
+      expect(geometry.placeholderTextOverflow).toBe("ellipsis");
+      expect(geometry.placeholderProjectedBottom).toBeLessThanOrEqual(geometry.shellBottom);
+      expect(geometry.placeholderProjectedBottom).toBeLessThanOrEqual(geometry.viewportHeight);
+    };
+    assertContained(await measurePlaceholder());
     await captureSnapshot(page, `composer-geometry-${refresh ? "refreshed" : "legacy"}`);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(paragraph).toBeVisible();
+    assertContained(await measurePlaceholder());
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+      390,
+    );
+    await page.setViewportSize({ width: 768, height: 1024 });
     await expect(page.getByRole("button", { name: "Attach" })).toBeVisible();
     await editor.click();
     await expect(editor).toBeFocused();
