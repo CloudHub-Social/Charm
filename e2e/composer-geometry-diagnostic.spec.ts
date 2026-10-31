@@ -70,8 +70,8 @@ for (const refresh of [false, true]) {
     await expect(page.getByRole("button", { name: "Attach" })).toBeVisible();
     await editor.click();
     await expect(editor).toBeFocused();
-    const measureCaret = () =>
-      editor.evaluate((element) => {
+    const measureCaret = (allowEmptyFallback: boolean) =>
+      editor.evaluate((element, allowFallback) => {
         const selection = window.getSelection();
         if (!selection || selection.rangeCount !== 1) throw new Error("Editor selection is absent");
         if (!selection.isCollapsed || !element.contains(selection.anchorNode)) {
@@ -80,7 +80,7 @@ for (const refresh of [false, true]) {
         const rangeBounds = selection.getRangeAt(0).getBoundingClientRect();
         // Chromium can return an empty rectangle for the caret in an empty
         // contenteditable paragraph. Its break element represents that line.
-        const emptyLine = element.querySelector("p br");
+        const emptyLine = allowFallback ? element.querySelector("p br") : null;
         const caret = rangeBounds.height > 0 ? rangeBounds : emptyLine?.getBoundingClientRect();
         if (!caret || caret.height <= 0) throw new Error("Editor caret line is not measurable");
         const editorBounds = element.getBoundingClientRect();
@@ -93,10 +93,10 @@ for (const refresh of [false, true]) {
           editorHeight: editorBounds.height,
           shellHeight: shell.height,
         };
-      });
-    const empty = await measureCaret();
+      }, allowEmptyFallback);
+    const empty = await measureCaret(true);
     await page.keyboard.type("x");
-    const typed = await measureCaret();
+    const typed = await measureCaret(false);
     expect(empty.caretHeight).toBeGreaterThan(0);
     expect(typed.caretHeight).toBeGreaterThan(0);
     expect(Math.abs(typed.caretTop - empty.caretTop)).toBeLessThanOrEqual(5);
