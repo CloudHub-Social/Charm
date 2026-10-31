@@ -330,6 +330,23 @@ provider check. Its final outcome fails unless validation, precheck, inspection
 and destination postcheck all succeed; skipped or cancelled jobs are not
 successful inspection.
 
+The proposed successor handoff records a human observation of **Autodeploy
+Off** for the exact app, component and source SHA, no more than five minutes
+old, and revalidates that original attestation's time and identity immediately
+before an update. It re-reads the provider app spec but does not re-read the
+effective-Off UI. A missing raw provider
+field is not interpreted as false: it is accepted only with that separate
+attestation. Raw `true`, `null`, malformed values, future or stale observations,
+and changed app state stop the attempt. The workflow records the actor, run ID
+and observation time; it rejects reruns. GitHub assigns run IDs after dispatch,
+so this is an audit receipt, not cryptographic proof that an observation was
+unique to that run. A new dispatch can replay the same observation while fresh;
+sole-writer and no-replay coordination are operational requirements, not an
+atomic provider lock. An external writer can change the setting after the UI
+observation or final read. Until the real successor PR is pinned and reviewed,
+the candidate refuses all provider updates. Development and testing of this
+evidence standard do not authorize a live inspection or restore.
+
 The separate **Charm read-only recovery precheck** workflow is manually
 dispatched on `main` and uses the existing protected provider environments. It
 performs fixed-target GET requests only; it does not update or unarchive the app,
