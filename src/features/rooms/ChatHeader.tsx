@@ -50,7 +50,7 @@ export function ChatHeader({
     <div
       className={cn(
         "flex items-center justify-between border-b border-border",
-        mobile ? "h-14 gap-1 px-1.5" : "gap-2 p-4",
+        mobile ? "h-14 gap-1 px-1.5" : "gap-2 px-4 py-2.5",
         uxRefreshEnabled &&
           "min-h-18 border-[var(--ux-shell-border)] bg-[var(--ux-content-bg)] px-3 py-2 sm:px-5",
       )}
@@ -147,7 +147,7 @@ export function ChatHeader({
               aria-label="Search messages"
               onClick={onOpenMessageSearch}
               className={cn(
-                "flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                "flex size-11 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
                 uxRefreshEnabled && "size-11 rounded-xl hover:bg-[var(--ux-selection-hover)]",
               )}
             >
@@ -160,7 +160,7 @@ export function ChatHeader({
             aria-pressed={membersDrawerOpen}
             onClick={onToggleMembers}
             className={cn(
-              "flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+              "flex size-11 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
               uxRefreshEnabled && "size-11 rounded-xl hover:bg-[var(--ux-selection-hover)]",
               membersDrawerOpen && "bg-accent text-accent-foreground",
             )}
@@ -176,7 +176,7 @@ export function ChatHeader({
               aria-pressed={pinnedMessagesDrawerOpen}
               onClick={onTogglePinnedMessages}
               className={cn(
-                "relative flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                "relative flex size-11 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
                 uxRefreshEnabled && "size-11 rounded-xl hover:bg-[var(--ux-selection-hover)]",
                 pinnedMessagesDrawerOpen && "bg-accent text-accent-foreground",
               )}
@@ -195,7 +195,7 @@ export function ChatHeader({
               aria-label="Jump to date"
               onClick={onJumpToDate}
               className={cn(
-                "flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                "flex size-11 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
                 uxRefreshEnabled && "size-11 rounded-xl hover:bg-[var(--ux-selection-hover)]",
               )}
             >
@@ -207,7 +207,7 @@ export function ChatHeader({
             aria-label="Room settings"
             onClick={onOpenRoomSettings}
             className={cn(
-              "flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+              "flex size-11 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
               uxRefreshEnabled && "size-11 rounded-xl hover:bg-[var(--ux-selection-hover)]",
             )}
           >
