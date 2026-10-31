@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { installMockTauri } from "./support/mockTauri";
+import { captureSnapshot } from "./support/sentrySnapshot";
 
 for (const refresh of [false, true]) {
   test(`inspect long composer placeholder geometry (refresh=${refresh})`, async ({ page }) => {
@@ -21,7 +22,8 @@ for (const refresh of [false, true]) {
     }, refresh);
     await page.goto("/");
     await page.getByRole("button", { name: /A deliberately long room name/ }).click();
-    const editor = page.getByRole("textbox", { name: /Message A deliberately long room name/ });
+    const editor = page.locator('[contenteditable="true"]').first();
+    await expect(editor).toHaveAttribute("aria-label", /Message A deliberately long room name/);
     const paragraph = editor.locator("p.is-editor-empty");
     await expect(paragraph).toBeVisible();
     const geometry = await paragraph.evaluate((element) => {
@@ -59,8 +61,11 @@ for (const refresh of [false, true]) {
       probe.remove();
       return result;
     });
+    // Diagnostic values are synthetic and are retained in hosted CI logs.
+    // eslint-disable-next-line no-console
     console.log(`COMPOSER_GEOMETRY ${JSON.stringify({ refresh, ...geometry })}`);
     expect(geometry.placeholderContent).toBe(true);
+    await captureSnapshot(page, `composer-geometry-${refresh ? "refreshed" : "legacy"}`);
     await expect(page.getByRole("button", { name: "Attach" })).toBeVisible();
     await editor.fill("synthetic draft retains focus");
     await expect(editor).toBeFocused();
