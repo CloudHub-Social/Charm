@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { installMockTauri } from "./support/mockTauri";
+import { captureSnapshot } from "./support/sentrySnapshot";
 
 test.use({ hasTouch: true });
 
@@ -19,15 +20,15 @@ for (const refresh of [false, true]) {
         },
       });
       await page.addInitScript(
-        ({ refresh, optional }) => {
+        (flags) => {
           localStorage.setItem(
             "charm:featureFlags",
             JSON.stringify({
               state: {
                 overrides: {
-                  ux_refresh_v1: refresh,
-                  message_pinning: optional,
-                  jump_to_date: optional,
+                  ux_refresh_v1: flags.refresh,
+                  message_pinning: flags.optional,
+                  jump_to_date: flags.optional,
                 },
               },
               updatedAt: Date.now(),
@@ -62,6 +63,10 @@ for (const refresh of [false, true]) {
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
         768,
       );
+      await captureSnapshot(
+        page,
+        `header-targets-${refresh ? "refreshed" : "legacy"}-${optional ? "all" : "basic"}`,
+      );
       await members.focus();
       await expect(members).toBeFocused();
       await page.keyboard.press("Enter");
@@ -69,8 +74,8 @@ for (const refresh of [false, true]) {
       await page.getByRole("button", { name: "Close members" }).click();
       if (optional) {
         await pins.click();
-        await expect(page.getByRole("button", { name: "Hide pinned messages" })).toBeVisible();
-        await page.getByRole("button", { name: "Hide pinned messages" }).click();
+        await expect(page.getByRole("heading", { name: "Pinned messages" })).toBeVisible();
+        await page.getByRole("button", { name: "Close pinned messages" }).click();
         await date.click();
         await expect(page.getByRole("dialog")).toBeVisible();
         await page.keyboard.press("Escape");

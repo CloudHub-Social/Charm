@@ -799,3 +799,15 @@ The CI-only validator is GPT-6 Luna High, resolved from the repository's
 registered `charm-validator` profile. The parent performed source implementation
 and self-review; no independent substantive review pass is claimed. Current checks, deployment,
 snapshot approval and device acceptance remain separate evidence.
+
+
+### P6 header target follow-through
+
+The [approved test-first plan](https://github.com/CloudHub-Social/Charm/issues/539#issuecomment-6536057885)
+checks room-header action hit areas in both UX flag states at tablet width.
+Hosted test-only [Quality 41147258112](https://github.com/CloudHub-Social/Charm/actions/runs/41147258112)
+measured a legacy action at 32px against the 44px contract. This increment
+expands legacy desktop action hit areas while retaining icons, labels, gates,
+callbacks and pressed states. Hosted final-head geometry, focus, overflow,
+visual and action evidence is required; physical-device acceptance remains open.
+Broader composer/header/context and P7 programme acceptance remain separate.

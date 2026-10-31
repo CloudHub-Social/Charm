@@ -338,3 +338,11 @@ The [existing UX recovery ledger](/operations/ux-recovery/) maps approved P6/P7
 outcomes to source, verification, dependencies and owners. Broader
 composer/header/context consolidation and physical acceptance remain outstanding;
 P8–P11 remain coordinator-owned backlog. No default-on rollout is authorized.
+
+
+### P6 room header touch targets
+
+Legacy desktop room-header actions retain their existing icons and behavior with
+44px hit areas, matching the refreshed and compact targets. Responsive browser
+coverage checks both flag states, conditional actions, focus and overflow;
+physical-device acceptance remains separate.
