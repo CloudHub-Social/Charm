@@ -77,7 +77,7 @@ def snapshot_current(spec, directory, filename):
                 os.unlink(filename, dir_fd=dfd)
                 os.fsync(dfd)
             except OSError:
-                pass
+                raise RuntimeError('snapshot cleanup uncertain') from None
             raise
         finally:
             os.close(fd)
@@ -98,15 +98,30 @@ def secret_entries(value, path=()):
     return []
 
 
-def plan(snapshot_bytes, current, app_id, active_archive, pending, instances):
+def offline_observation(app_id, active_phase, active_archive, pending_or_in_progress, instances,
+                        offline_response, no_known_competing_owner):
+    """Assess caller assertions; this is not a provider receipt or a lock.
+
+    A null instance result is unknown, not zero. It is allowed only under the
+    distinct operational archive/offline boundary and never with live entries.
+    """
+    if (app_id != APP or active_phase != 'ACTIVE' or active_archive is not True
+            or pending_or_in_progress is not False or (instances is not None and instances != [])
+            or offline_response is not True or no_known_competing_owner is not True):
+        raise ValueError('operational archive observation unavailable')
+
+
+def plan(snapshot_bytes, current, app_id, active_phase, active_archive, pending_or_in_progress,
+         instances, offline_response, no_known_competing_owner):
     """Validate supplied synthetic inputs and return a constrained copy.
 
     Caller-provided bytes and state are untrusted assertions, not evidence of
     durable custody or fresh provider state. This offline helper is not an
     authorization or safety gate for a provider update.
     """
-    if (app_id != APP or active_archive is not True or pending is not False
-            or instances != [] or not isinstance(snapshot_bytes, bytes)):
+    offline_observation(app_id, active_phase, active_archive, pending_or_in_progress, instances,
+                        offline_response, no_known_competing_owner)
+    if not isinstance(snapshot_bytes, bytes):
         raise ValueError('required recovery evidence unavailable')
     try:
         initial = json.loads(snapshot_bytes)
@@ -144,10 +159,14 @@ def plan(snapshot_bytes, current, app_id, active_archive, pending, instances):
     return result
 
 
-def reconcile(expected, actual, active_archive, pending, instances, outcome_known):
-    """Refuse to claim success on uncertainty, drift or an unknown instance list."""
-    if (outcome_known is not True or active_archive is not True or pending is not False
-            or instances != [] or actual != expected
+def assess_offline_match(expected, actual, app_id, active_phase, active_archive, pending_or_in_progress,
+              instances, offline_response, no_known_competing_owner, outcome_known):
+    """Assess assertions only; never establish zero instances, custody or recovery."""
+    offline_observation(app_id, active_phase, active_archive, pending_or_in_progress, instances,
+                        offline_response, no_known_competing_owner)
+    if (outcome_known is not True or actual != expected
             or secret_entries(actual) != secret_entries(expected)):
-        raise ValueError('recovery remains unverified')
-    return True
+        raise ValueError('offline assessment incomplete')
+    return {'spec_matches_supplied_expected': True,
+            'instance_result': 'unknown' if instances is None else 'empty-list-reported',
+            'recovery_verified': False}
