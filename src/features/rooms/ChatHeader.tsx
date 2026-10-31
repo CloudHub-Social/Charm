@@ -50,7 +50,7 @@ export function ChatHeader({
     <div
       className={cn(
         "flex items-center justify-between border-b border-border",
-        mobile ? "h-14 gap-1 px-1.5" : "gap-2 p-4",
+        mobile ? "h-14 gap-1 px-1.5" : "gap-2 px-4 py-2.5",
         uxRefreshEnabled &&
           "min-h-18 border-[var(--ux-shell-border)] bg-[var(--ux-content-bg)] px-3 py-2 sm:px-5",
       )}
