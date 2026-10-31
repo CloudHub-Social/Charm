@@ -93,6 +93,7 @@ jobs:
           python3 -m unittest discover -s scripts -p 'test_merge_do_app_spec.py'
           python3 -m unittest discover -s scripts -p 'test_state_cutover.py'
           python3 -m unittest discover -s scripts -p 'test_charm_inspect_handoff.py'
+          python3 -m unittest discover -s scripts -p 'test_charm_recovery_plan.py'
 
       - id: frontend_install
         run: pnpm install --frozen-lockfile
