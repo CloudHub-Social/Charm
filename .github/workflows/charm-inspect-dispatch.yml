@@ -15,6 +15,26 @@ on:
         description: "Allow temporary unarchive of an archived retained spec"
         type: boolean
         default: false
+      observed_app_id:
+        description: "App ID observed in DigitalOcean component settings"
+        type: string
+        required: true
+      observed_component:
+        description: "Component observed in DigitalOcean settings"
+        type: string
+        required: true
+      observed_revision:
+        description: "Exact qualified diagnostic source SHA"
+        type: string
+        required: true
+      observed_at_utc:
+        description: "UTC Off observation time, YYYY-MM-DDTHH:MM:SSZ"
+        type: string
+        required: true
+      observed_autodeploy_off:
+        description: "Confirm the component settings displayed Autodeploy Off"
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -95,6 +115,11 @@ jobs:
       CHARM_R2_PREFLIGHT: ${{ needs.r2_precheck.outputs.empty }}
       CHARM_BUDGET_HEADROOM: confirmed
       CHARM_ALLOW_ARCHIVED_RETAINED_SPEC: ${{ inputs.allow_archived_retained_spec }}
+      CHARM_OBSERVED_APP_ID: ${{ inputs.observed_app_id }}
+      CHARM_OBSERVED_COMPONENT: ${{ inputs.observed_component }}
+      CHARM_OBSERVED_REVISION: ${{ inputs.observed_revision }}
+      CHARM_OBSERVED_AT_UTC: ${{ inputs.observed_at_utc }}
+      CHARM_OBSERVED_AUTODEPLOY_OFF: ${{ inputs.observed_autodeploy_off }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:

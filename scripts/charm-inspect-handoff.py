@@ -5,6 +5,7 @@ Never log spec, provider response bodies, credentials, object metadata or logs.
 This script is not approval to run. See charm-diagnostic-execution-plan.md.
 """
 import copy
+import datetime
 import json
 import os
 import re
@@ -18,6 +19,10 @@ APP = 'd920ec97-4a06-40e1-b1b5-9cbc903f5ec6'
 ACCOUNT = 'bb346e009981b1b928a5b8e008f7021d'
 BUCKET = 'charm-api-state-production'
 SIZE = 'apps-s-1vcpu-0.5gb'
+ORIGINAL_DIAGNOSTIC_SHA = 'eaffaf34d99a489dd2b01eb51b2de6acdb14d5ff'
+# A real successor PR number must be set and independently reviewed after
+# creation. Until then the candidate cannot request a provider update.
+SUCCESSOR_PR = None
 BASE = 'https://api.digitalocean.com/v2/apps/' + APP
 CATEGORIES = (
     'state inventory within bounds',
@@ -83,16 +88,24 @@ def source_revision(revision):
         raise RuntimeError('qualified release is not current main')
 
 
-def release_identities(revision, workflow_revision, pull_request):
-    base = pull_request.get('base') or {}
+def release_identities(revision, workflow_revision, original_pr, successor_pr, lineage):
+    base = successor_pr.get('base') or {}
     repository = base.get('repo') or {}
+    original_base = original_pr.get('base') or {}
     if (not re.fullmatch('[0-9a-f]{40}', revision or '')
             or not re.fullmatch('[0-9a-f]{40}', workflow_revision or '')
-            or pull_request.get('number') != 614
-            or pull_request.get('merged') is not True
-            or pull_request.get('merge_commit_sha') != revision
+            or original_pr.get('number') != 614 or original_pr.get('merged') is not True
+            or original_pr.get('merge_commit_sha') != ORIGINAL_DIAGNOSTIC_SHA
+            or (original_base.get('repo') or {}).get('full_name') != 'CloudHub-Social/Charm'
+            or original_base.get('ref') != 'main'
+            or type(SUCCESSOR_PR) is not int or SUCCESSOR_PR <= 0
+            or successor_pr.get('number') != SUCCESSOR_PR
+            or successor_pr.get('merged') is not True
+            or successor_pr.get('merge_commit_sha') != revision
             or repository.get('full_name') != 'CloudHub-Social/Charm'
             or base.get('ref') != 'main'
+            or (lineage.get('merge_base_commit') or {}).get('sha') != ORIGINAL_DIAGNOSTIC_SHA
+            or lineage.get('status') != 'ahead'
             or workflow_revision != revision):
         raise RuntimeError('immutable diagnostic or workflow identity not established')
     return revision, workflow_revision
@@ -130,7 +143,41 @@ def read_candidate_until(deployment, token, deadline):
         time.sleep(min(15, remaining))
 
 
-def build_spec(original, revision, allow_unarchive=False):
+def validate_off_attestation(original, revision, attestation, run_id, actor, now=None):
+    if not isinstance(attestation, dict):
+        raise RuntimeError('auto-deploy observation missing')
+    if (attestation.get('app') != APP or attestation.get('component') != 'api'
+            or attestation.get('revision') != revision or attestation.get('off') is not True
+            or not re.fullmatch('[0-9]+', run_id or '')
+            or attestation.get('run_id') != run_id or not actor
+            or attestation.get('actor') != actor or attestation.get('run_attempt') != '1'):
+        raise RuntimeError('auto-deploy observation identity invalid')
+    observed = attestation.get('observed_at')
+    try:
+        if not isinstance(observed, str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z', observed):
+            raise ValueError()
+        timestamp = datetime.datetime.strptime(observed, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=datetime.timezone.utc).timestamp()
+    except ValueError:
+        raise RuntimeError('auto-deploy observation time invalid') from None
+    age = (time.time() if now is None else now) - timestamp
+    if not 0 <= age <= 300:
+        raise RuntimeError('auto-deploy observation stale or future')
+    services = original.get('services') or []
+    if len(services) != 1 or services[0].get('name') != 'api':
+        raise RuntimeError('auto-deploy observation target mismatch')
+    if any(services[0].get(key) is not None for key in ('git', 'gitlab', 'bitbucket', 'image')):
+        raise RuntimeError('conflicting provider source configuration')
+    github = services[0].get('github')
+    if not isinstance(github, dict) or github.get('repo') != 'CloudHub-Social/Charm' or github.get('branch') != 'main':
+        raise RuntimeError('unexpected source route')
+    # Missing is accepted only under the separate Off attestation; it is not
+    # interpreted as false. An explicit contradictory or malformed value fails.
+    if 'deploy_on_push' in github and github['deploy_on_push'] is not False:
+        raise RuntimeError('provider auto-deploy observation contradictory or malformed')
+
+
+def build_spec(original, revision, allow_unarchive=False, attestation=None, run_id=None, actor=None, now=None):
+    validate_off_attestation(original, revision, attestation, run_id, actor, now)
     spec = copy.deepcopy(original)
     maintenance = spec.get('maintenance', {})
     if not isinstance(maintenance, dict) or not isinstance(maintenance.get('archive', False), bool):
@@ -144,8 +191,6 @@ def build_spec(original, revision, allow_unarchive=False):
     github = service.get('github') or {}
     if github.get('repo') != 'CloudHub-Social/Charm' or github.get('branch') != 'main':
         raise RuntimeError('unexpected source route')
-    if github.get('deploy_on_push') is not False:
-        raise RuntimeError('explicitly disabled provider auto-deploy not established')
     envs = service.get('envs') or []
     keys = [e.get('key') for e in envs]
     if len(keys) != len(set(keys)):
@@ -215,6 +260,18 @@ def main():
     if len(sys.argv) != 4 or sys.argv[2:] != ['--execute', '--coordinated-sole-writer'] or not re.fullmatch('[0-9a-f]{40}', sys.argv[1]):
         raise RuntimeError('expected qualified main SHA, explicit execute flag and sole-writer acknowledgment')
     revision = sys.argv[1]
+    run_id = os.environ.get('GITHUB_RUN_ID')
+    actor = os.environ.get('GITHUB_ACTOR')
+    attestation = {
+        'app': os.environ.get('CHARM_OBSERVED_APP_ID'),
+        'component': os.environ.get('CHARM_OBSERVED_COMPONENT'),
+        'revision': os.environ.get('CHARM_OBSERVED_REVISION'),
+        'observed_at': os.environ.get('CHARM_OBSERVED_AT_UTC'),
+        'off': os.environ.get('CHARM_OBSERVED_AUTODEPLOY_OFF') == 'true',
+        'run_id': run_id,
+        'run_attempt': os.environ.get('GITHUB_RUN_ATTEMPT'),
+        'actor': actor,
+    }
     do_token = os.environ.get('DIGITALOCEAN_ACCESS_TOKEN')
     if (not do_token or os.environ.get('GITHUB_ACTIONS') != 'true'
             or os.environ.get('GITHUB_EVENT_NAME') != 'workflow_dispatch'
@@ -223,12 +280,15 @@ def main():
             or os.environ.get('CHARM_R2_PREFLIGHT') != 'empty'
             or os.environ.get('CHARM_BUDGET_HEADROOM') != 'confirmed'):
         raise RuntimeError('protected dispatch context or same-run source preflight absent')
-    # PR #614's immutable merge SHA is the approved source pin; merely being
-    # current main is insufficient. Workflow and source identities are distinct
-    # facts and must both identify this protected merge for this release route.
+    # Both the original diagnostic and a specific reviewed successor must be
+    # immutable; an arbitrary current-main revision is insufficient.
+    if type(SUCCESSOR_PR) is not int or SUCCESSOR_PR <= 0:
+        raise RuntimeError('successor PR not pinned; no provider update permitted')
     pr = req('https://api.github.com/repos/CloudHub-Social/Charm/pulls/614', None)
+    successor = req('https://api.github.com/repos/CloudHub-Social/Charm/pulls/' + str(SUCCESSOR_PR), None)
+    lineage = req('https://api.github.com/repos/CloudHub-Social/Charm/compare/' + ORIGINAL_DIAGNOSTIC_SHA + '...' + revision, None)
     revision, workflow_revision = release_identities(
-        revision, os.environ.get('GITHUB_WORKFLOW_SHA'), pr)
+        revision, os.environ.get('GITHUB_WORKFLOW_SHA'), pr, successor, lineage)
     print('Workflow revision:', workflow_revision, '; diagnostic revision:', revision, flush=True)
     source_revision(revision)
     app, active, instances = app_state(do_token)
@@ -236,7 +296,10 @@ def main():
     opt_in = os.environ.get('CHARM_ALLOW_ARCHIVED_RETAINED_SPEC')
     if opt_in not in ('true', 'false'):
         raise RuntimeError('invalid explicit unarchive opt-in')
-    proposed = build_spec(initial, revision, allow_unarchive=opt_in == 'true')
+    proposed = build_spec(initial, revision, allow_unarchive=opt_in == 'true',
+                          attestation=attestation, run_id=run_id, actor=actor)
+    print('Off attestation:', attestation['observed_at'], '; revision:', revision,
+          '; run:', run_id, '; actor:', actor, flush=True)
     initial_secrets = secret_entries(initial)
     if secret_entries(proposed) != initial_secrets:
         raise RuntimeError('complete secret entries changed')
@@ -248,6 +311,8 @@ def main():
     latest = archived_state(now_app, now_active, now_instances)
     if latest != initial or now_active['id'] != baseline_id:
         raise RuntimeError('app or active deployment drifted')
+    # Revalidate the same observation after the final read and before any PUT.
+    validate_off_attestation(latest, revision, attestation, run_id, actor)
     PHASE = 'single update'
     started = time.monotonic()
     ATTEMPTED = True  # Includes unknown response outcomes.
