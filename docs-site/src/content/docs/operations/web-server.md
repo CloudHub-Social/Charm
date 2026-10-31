@@ -330,6 +330,24 @@ provider check. Its final outcome fails unless validation, precheck, inspection
 and destination postcheck all succeed; skipped or cancelled jobs are not
 successful inspection.
 
+The separate **Charm read-only recovery precheck** workflow is manually
+dispatched on `main` and uses the existing protected provider environments. It
+performs fixed-target GET requests only; it does not update or unarchive the app,
+cancel a deployment, or copy session data. It reports the raw provider
+autodeploy value as `true`, `false`, or `unknown`, and whether the destination
+list was accessible and proved empty. It also reports workflow and source
+revisions. Provider response bodies, credentials and object names are not
+reported.
+
+A successful provider-read job means the read completed, not that recovery is
+safe: `true` and `unknown` do not satisfy the inspection handoff's explicit
+`false` requirement. An unavailable list or unproven empty destination is not a
+passed destination precheck. The reads do not authorize a live inspection or
+cutover, guarantee a later provider state, or replace the inspection's own
+same-run checks. Merging a later precheck revision advances `main`; the existing
+inspection handoff remains pinned to PR #614's merge revision and fails closed
+until a separately reviewed immutable successor binding is established.
+
 For the ten-session planning scenario, doubling the estimated operations for that
 single retry remains below one million Class A and seven million Class B requests
 per month. At Standard pricing, rounding to those billing units and one GB-month

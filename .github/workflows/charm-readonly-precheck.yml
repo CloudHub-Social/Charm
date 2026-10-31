@@ -1,0 +1,74 @@
+name: Charm read-only recovery precheck
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    env:
+      TARGET_REF: ${{ github.ref }}
+    steps:
+      - name: Require main
+        run: test "$TARGET_REF" = refs/heads/main
+  provider:
+    needs: validate
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: digitalocean-production
+    steps:
+      - name: Read raw provider auto-deploy setting
+        env:
+          DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          token = os.environ.get('DIGITALOCEAN_ACCESS_TOKEN')
+          if not token:
+              raise SystemExit('Provider read unavailable')
+          request = urllib.request.Request('https://api.digitalocean.com/v2/apps/d920ec97-4a06-40e1-b1b5-9cbc903f5ec6', headers={'Authorization': 'Bearer ' + token}, method='GET')
+          try:
+              with urllib.request.urlopen(request, timeout=15) as response:
+                  app = json.load(response)['app']
+              services = app['spec']['services']
+              if len(services) != 1 or services[0].get('name') != 'api':
+                  raise ValueError()
+              value = services[0].get('github', {}).get('deploy_on_push')
+              state = 'false' if value is False else 'true' if value is True else 'unknown'
+          except Exception:
+              raise SystemExit('Provider read unavailable')
+          print('Raw autodeploy:', state)
+          print('Workflow revision:', os.environ['WORKFLOW_SHA'])
+          print('Source revision:', os.environ['SOURCE_SHA'])
+          PY
+  destination:
+    needs: validate
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: cloudflare-preview
+    steps:
+      - name: Read destination list capability
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          token = os.environ.get('CLOUDFLARE_API_TOKEN')
+          if not token:
+              raise SystemExit('R2 list capability unavailable')
+          request = urllib.request.Request('https://api.cloudflare.com/client/v4/accounts/bb346e009981b1b928a5b8e008f7021d/r2/buckets/charm-api-state-production/objects?per_page=1', headers={'Authorization': 'Bearer ' + token}, method='GET')
+          try:
+              with urllib.request.urlopen(request, timeout=15) as response:
+                  result = json.load(response)
+              if result.get('success') is not True or not isinstance(result.get('result'), list):
+                  raise ValueError()
+          except Exception:
+              raise SystemExit('R2 list capability unavailable')
+          info = result.get('result_info')
+          if (result['result'] != [] or (info is not None and (not isinstance(info, dict)
+                  or info.get('is_truncated') is not False or info.get('cursor')))):
+              raise SystemExit('R2 list accessible; destination empty state not established')
+          print('R2 list accessible; destination is empty')
+          PY
