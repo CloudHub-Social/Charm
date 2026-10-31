@@ -22,7 +22,7 @@ SIZE = 'apps-s-1vcpu-0.5gb'
 ORIGINAL_DIAGNOSTIC_SHA = 'eaffaf34d99a489dd2b01eb51b2de6acdb14d5ff'
 # A real successor PR number must be set and independently reviewed after
 # creation. Until then the candidate cannot request a provider update.
-SUCCESSOR_PR = None
+SUCCESSOR_PR = 621
 BASE = 'https://api.digitalocean.com/v2/apps/' + APP
 CATEGORIES = (
     'state inventory within bounds',
