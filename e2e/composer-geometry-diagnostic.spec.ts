@@ -66,11 +66,36 @@ for (const refresh of [false, true]) {
     console.log(`COMPOSER_GEOMETRY ${JSON.stringify({ refresh, ...geometry })}`);
     expect(geometry.placeholderContent).toBe(true);
     await captureSnapshot(page, `composer-geometry-${refresh ? "refreshed" : "legacy"}`);
+    await page.addStyleTag({
+      content:
+        ".tiptap.ProseMirror p.is-editor-empty:first-child::before { height: auto; width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }",
+    });
+    const constrained = await paragraph.evaluate((element) => {
+      const before = getComputedStyle(element, "::before");
+      const rect = element.getBoundingClientRect();
+      return {
+        viewportHeight: window.innerHeight,
+        paragraphBottom: rect.bottom,
+        pseudoHeight: before.height,
+        pseudoWidth: before.width,
+        whiteSpace: before.whiteSpace,
+        overflow: before.overflow,
+      };
+    });
+    // Diagnostic values are synthetic and are retained in hosted CI logs.
+    // eslint-disable-next-line no-console
+    console.log(`COMPOSER_GEOMETRY_CONSTRAINED ${JSON.stringify({ refresh, ...constrained })}`);
+    await captureSnapshot(
+      page,
+      `composer-geometry-constrained-${refresh ? "refreshed" : "legacy"}`,
+    );
     await expect(page.getByRole("button", { name: "Attach" })).toBeVisible();
     await editor.fill("synthetic draft retains focus");
     await expect(editor).toBeFocused();
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(editor).toContainText("synthetic draft retains focus");
-    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+      390,
+    );
   });
 }
